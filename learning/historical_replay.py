@@ -198,8 +198,11 @@ class HistoricalReplay:
 
         # 2.5. Trend filter: skip entries when SPX below 200MA
         if TREND_FILTER_ENABLED and self._spx_trend_cache:
-            above_200ma = self._spx_trend_cache.get(date_str)
+            date_str_clean = str(date_str)[:10]  # "YYYY-MM-DD" from Timestamp or string
+            above_200ma = self._spx_trend_cache.get(date_str_clean)
             if above_200ma is False:
+                if self._verbose:
+                    print(f"  TREND BLOCKED {date_str_clean} — SPX below 200MA, no entries")
                 return
 
         # 3. Enter new positions if under max
