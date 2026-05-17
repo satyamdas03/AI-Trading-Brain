@@ -122,11 +122,12 @@ X/Twitter sentiment data enriches debate contexts when available (see Sentiment 
 
 Simulates full strategy on 20-year price data during market-closed hours:
 
-- 50-S&P-500 basket with factor scoring per historical date
+- **Current universe:** 100 S&P 500 tickers (expanded from 50 on 2026-05-17)
 - Trend filter (SPX vs 200MA) applied per historical day
 - Simulated trades tracked with P&L, win rate, drawdown
 - Checkpoint/resume support for long-running replays
-- Latest run: 4,780 days, 1,580 trades, $219,177 equity (from $100K), 58.2% WR
+- Latest full 50-ticker run: 4,780 days, 1,535 trades, $241,893 equity (from $100K), 58.4% WR, +141.9%
+- Expanded 100-ticker run in progress (more realistic, less A-prefix defensive bias)
 
 ### 5. Online Learning (`learning/weight_optimizer.py`)
 
@@ -295,6 +296,31 @@ Equal weights beat learned weights by $22,716. Reason: learned weights overfit t
 ## License
 
 MIT
+
+---
+
+## Changelog
+
+### 2026-05-17
+- **Critical fix:** Missing comma in `execution/engine.py:99` (bracket order dict) — would crash execution module
+- **Expanded replay universe:** 50 → 100 tickers (fixed A-prefix defensive bias)
+- **Fixed SPX trend cache:** pandas MultiIndex handling for single-ticker yfinance quirk
+- **DB migration confirmed:** All 7 Supabase tables exist with data
+- **GitHub repo created:** https://github.com/satyamdas03/AI-Trading-Brain
+- **README created:** Comprehensive project documentation with architecture, components, setup
+- **.env.example updated:** All 40+ config keys documented (was missing 12+ keys)
+- **.gitignore updated:** Added `logs/` exclusion
+- **TRADE_ENABLED=true:** Paper trading execution gate opened in .env
+- All 17 system checks pass (verify.py)
+
+### 2026-05-16
+- Phase 5 complete: Dashboard + migration gates + notifications
+- X/Twitter sentiment scanner built (x_scanner.py, 606 lines)
+- Polymarket Pipeline V2 bridge built (polymarket_bridge.py, 89 lines)
+- Risk-reward fixed: 7%TP / 6%SL (was 5%TP / 7%SL — negative expectancy)
+- Trend filter added: SPX vs 200MA blocks entries
+- Online learning disabled: equal weights beat learned by $22,716 in 19yr replay
+- Dashboard FastAPI integrated into brain daemon
 
 ---
 

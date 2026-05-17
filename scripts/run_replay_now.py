@@ -14,7 +14,7 @@ print("=" * 60)
 print("AI TRADING BRAIN — PAPER TRADING ON 20 YEARS OF DATA")
 print("=" * 60)
 
-stats = replay.run(max_days=500, verbose=True)
+stats = replay.run(max_days=10000, verbose=True)
 
 print("\n" + "=" * 60)
 print("FINAL RESULTS")
