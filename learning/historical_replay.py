@@ -470,13 +470,21 @@ class HistoricalReplay:
             if spx.empty:
                 logger.warning("Could not fetch ^GSPC data for trend filter")
                 return cache
+            # Flatten MultiIndex columns if present (yfinance quirk for single ticker)
+            if isinstance(spx.columns, pd.MultiIndex):
+                spx.columns = spx.columns.get_level_values(0)
             spx["ma200"] = spx["Close"].rolling(200).mean()
             for idx, row in spx.iterrows():
                 ma = row.get("ma200")
                 close = row.get("Close")
-                if pd.notna(ma) and pd.notna(close) and ma > 0:
+                try:
+                    ma_val = float(ma.iloc[0]) if hasattr(ma, 'iloc') else float(ma)
+                    close_val = float(close.iloc[0]) if hasattr(close, 'iloc') else float(close)
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if pd.notna(ma_val) and pd.notna(close_val) and ma_val > 0:
                     date_str = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]
-                    cache[date_str] = float(close) >= float(ma)
+                    cache[date_str] = close_val >= ma_val
         except Exception as e:
             logger.warning(f"SPX trend cache build failed: {e}")
         logger.info(f"  SPX trend cache: {len(cache)} dates with 200MA status")
