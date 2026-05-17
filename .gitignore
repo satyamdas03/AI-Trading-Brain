@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+coverage/
+htmlcov/
+logs/
+node_modules/
