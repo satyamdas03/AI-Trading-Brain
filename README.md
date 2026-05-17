@@ -126,8 +126,18 @@ Simulates full strategy on 20-year price data during market-closed hours:
 - Trend filter (SPX vs 200MA) applied per historical day
 - Simulated trades tracked with P&L, win rate, drawdown
 - Checkpoint/resume support for long-running replays
-- Latest full 50-ticker run: 4,780 days, 1,535 trades, $241,893 equity (from $100K), 58.4% WR, +141.9%
-- Expanded 100-ticker run in progress (more realistic, less A-prefix defensive bias)
+- **Latest 100-ticker run:** 4,780 days, 1,214 trades, $201,719 equity (from $100K), 58.1% WR, +101.7%
+- Trend filter blocks entries when SPX below 200MA: 1,131 days blocked, max DD 2.7% (vs 27% without)
+
+### Trend Filter Impact (100-ticker, 20-year replay)
+
+| Metric | No Filter | With Filter | Delta |
+|--------|-----------|-------------|-------|
+| Trades | 1,498 | 1,214 | -284 |
+| Final equity | $211,866 | $201,719 | -$10,147 |
+| Return | +111.9% | +101.7% | -10.2pp |
+| 2008 max DD | ~27% | 2.7% | **-24.3pp** |
+| Risk-adj return | 4.1x | 37.7x | **9.2x better** |
 
 ### 5. Online Learning (`learning/weight_optimizer.py`)
 
@@ -305,6 +315,7 @@ MIT
 - **Critical fix:** Missing comma in `execution/engine.py:99` (bracket order dict) — would crash execution module
 - **Expanded replay universe:** 50 → 100 tickers (fixed A-prefix defensive bias)
 - **Fixed SPX trend cache:** pandas MultiIndex handling for single-ticker yfinance quirk
+- **Fixed trend filter date mismatch:** Timestamp vs string caused cache lookup to always miss — filter never blocked. Now blocks 1,131 days, reduces 2008 max DD from 27% to 2.7%
 - **DB migration confirmed:** All 7 Supabase tables exist with data
 - **GitHub repo created:** https://github.com/satyamdas03/AI-Trading-Brain
 - **README created:** Comprehensive project documentation with architecture, components, setup
