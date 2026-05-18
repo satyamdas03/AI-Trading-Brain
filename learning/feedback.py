@@ -36,12 +36,14 @@ class FeedbackLoop:
         self,
         weights: Optional[FactorWeights] = None,
         lr: float = 0.05,
+        force_enable: bool = False,
     ):
         self.optimizer = OnlineWeightOptimizer(weights=weights, lr=lr)
         self.decay_detector = DecayDetector()
         self._trade_history: list[dict] = []
         self._attribution_history: list[dict] = []
         self._current_weights = weights or FactorWeights()
+        self._force_enable = force_enable
 
     def process_closed_trades(
         self,
@@ -73,8 +75,8 @@ class FeedbackLoop:
         factor_ic = compute_factor_ic(closed_trades, pd.DataFrame())
         hit_rate = compute_hit_rate(closed_trades)
 
-        # Update online weights using IC as signal (disabled per Phase 4 campaign findings)
-        if ONLINE_LEARNING_ENABLED:
+        # Update online weights using IC as signal
+        if ONLINE_LEARNING_ENABLED or self._force_enable:
             self.optimizer.update(factor_ic)
             self._current_weights = self.optimizer.weights
         else:

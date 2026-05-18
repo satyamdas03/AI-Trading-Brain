@@ -78,7 +78,7 @@ class HistoricalReplay:
     def feedback(self):
         if self._feedback_loop is None:
             from learning.feedback import FeedbackLoop
-            self._feedback_loop = FeedbackLoop(lr=0.01)
+            self._feedback_loop = FeedbackLoop(lr=0.01, force_enable=True)
         return self._feedback_loop
 
     def run(self, max_days: int = MAX_DAYS_PER_RUN, verbose: bool = False) -> ReplayStats:
@@ -164,7 +164,7 @@ class HistoricalReplay:
                 trades_taken = self.stats.trades_taken
                 wr = self.stats.wins / max(1, trades_taken)
                 w = self.feedback._current_weights.as_dict()
-                print(f"  === [{date_str}] day {i+1}/{days_to_run} | equity=${self.stats.current_equity:,.0f} | trades={trades_taken} | WR={wr:.0%} | DD={self.stats.current_drawdown:.1%} | w:M={w['momentum']:.2f}/LV={w['low_vol']:.2f} ===")
+                print(f"  === [{date_str}] day {i+1}/{days_to_run} | equity=${self.stats.current_equity:,.0f} | trades={trades_taken} | WR={wr:.0%} | DD={self.stats.current_drawdown:.1%} | w:M={w['momentum']:.2f}/LV={w['low_vol']:.2f}/Q={w['quality']:.2f}/V={w['value']:.2f} ===")
 
             # Save checkpoint periodically
             if (i + 1) % 10 == 0:
