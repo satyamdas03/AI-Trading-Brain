@@ -367,10 +367,12 @@ class HistoricalReplay:
         """Pre-compute factor scores across full price history.
 
         Computes: momentum_score (12-1 cross-sectional), low_vol_score (inverse 60d vol),
-        and composite_score. quality_score and value_score default to 0.5 (no fundamental data).
+        quality_score, value_score, and composite_score.
+        Fundamentals fetched from yfinance (current) and applied as constant proxy.
         """
         logger.info("  Computing factor scores on historical data...")
         tickers = prices_df["ticker"].unique()
+        fundamentals = self._fetch_replay_fundamentals(tickers)
         scores_list = []
 
         for t in tickers:
@@ -392,12 +394,19 @@ class HistoricalReplay:
                     vol = 0.02
                 low_vol = 1.0 / (1.0 + vol * 100)  # Normalize to ~0-1
 
+                # Fetch fundamental scores for this ticker (constant over time from current data)
+                f = fundamentals.get(t, {})
+                quality_raw = _compute_quality_raw(f)
+                value_raw = _compute_value_raw(f)
+
                 scores_list.append({
                     "ticker": t,
                     "date": dates[i],
                     "close": closes[i],
                     "momentum_raw": mom_ret,
                     "vol_raw": vol,
+                    "quality_raw": quality_raw,
+                    "value_raw": value_raw,
                 })
 
         if not scores_list:
@@ -409,9 +418,11 @@ class HistoricalReplay:
         scores_df["momentum_score"] = scores_df.groupby("date")["momentum_raw"].rank(pct=True)
         scores_df["low_vol_score"] = scores_df.groupby("date")["vol_raw"].rank(pct=True, ascending=False)
 
-        # Quality and value default to neutral (no fundamental data in replay)
-        scores_df["quality_score"] = 0.5
-        scores_df["value_score"] = 0.5
+        # Quality and value: cross-sectional rank per date from (constant) raw scores
+        # Each ticker gets same raw score every date → rank stays constant, but
+        # differing universe composition means ranks shift slightly as tickers enter/exit
+        scores_df["quality_score"] = scores_df.groupby("date")["quality_raw"].rank(pct=True)
+        scores_df["value_score"] = scores_df.groupby("date")["value_raw"].rank(pct=True)
 
         # Composite score with current weights
         try:
@@ -617,6 +628,49 @@ class HistoricalReplay:
         # Keep last 10000 trades
         SIMULATED_TRADES_FILE.write_text(json.dumps(existing[-10000:], indent=2))
 
+    def _fetch_replay_fundamentals(self, tickers: list) -> dict[str, dict]:
+        """Fetch current fundamentals for replay scoring. Cached to disk for speed."""
+        import hashlib
+        cache_path = REPLAY_DIR / "replay_fundamentals.json"
+        tickers_key = hashlib.md5(",".join(sorted(tickers)).encode()).hexdigest()[:8]
+
+        # Check cache — valid for 30 days
+        if cache_path.exists():
+            try:
+                cache = json.loads(cache_path.read_text())
+                cached_key = cache.get("_tickers_key", "")
+                cached_at = cache.get("_cached_at", 0)
+                if cached_key == tickers_key and time.time() - cached_at < 30 * 86400:
+                    logger.info(f"  Using cached fundamentals ({len(cache) - 2} tickers)")
+                    return {k: v for k, v in cache.items() if not k.startswith("_")}
+            except Exception:
+                pass
+
+        logger.info(f"  Fetching fundamentals for {len(tickers)} tickers...")
+        try:
+            from ingestion.market_data import fetch_fundamentals
+            result = {}
+            batch_size = 20
+            for i in range(0, len(tickers), batch_size):
+                chunk = tickers[i:i + batch_size]
+                for t in chunk:
+                    result[t] = fetch_fundamentals(t)
+                if (i + batch_size) % 60 == 0:
+                    logger.info(f"    Fundamentals: {min(i + batch_size, len(tickers))}/{len(tickers)}")
+        except Exception as e:
+            logger.warning(f"Fundamentals fetch failed: {e}")
+            return {}
+
+        # Cache
+        result["_tickers_key"] = tickers_key
+        result["_cached_at"] = time.time()
+        try:
+            cache_path.write_text(json.dumps(result, default=str))
+        except Exception:
+            pass
+
+        return {k: v for k, v in result.items() if not k.startswith("_")}
+
     def get_stats(self) -> dict:
         """Current replay stats for dashboard/status."""
         return {
@@ -633,3 +687,31 @@ class HistoricalReplay:
             "date_range": f"{self.stats.start_date} → {self.stats.end_date}",
             "open_positions": len(self._open_positions),
         }
+
+
+def _compute_quality_raw(fundamentals: dict) -> float:
+    """Compute raw quality score from fundamentals (0-1 scale, before cross-sectional ranking)."""
+    if not fundamentals:
+        return 0.5
+    roe = fundamentals.get("roe")
+    margin = fundamentals.get("profit_margin")
+    score = 0.5
+    if roe is not None and isinstance(roe, (int, float)):
+        score += 0.25 * min(max(roe, 0) / 0.30, 1.0)
+    if margin is not None and isinstance(margin, (int, float)):
+        score += 0.25 * min(max(margin, 0) / 0.25, 1.0)
+    return min(1.0, max(0.0, score))
+
+
+def _compute_value_raw(fundamentals: dict) -> float:
+    """Compute raw value score from fundamentals (0-1 scale, lower P/E & P/B = higher score)."""
+    if not fundamentals:
+        return 0.5
+    pe = fundamentals.get("pe_ratio")
+    pb = fundamentals.get("pb_ratio")
+    score = 0.5
+    if pe is not None and isinstance(pe, (int, float)) and pe > 0:
+        score -= 0.25 * min(pe / 30, 1.0)
+    if pb is not None and isinstance(pb, (int, float)) and pb > 0:
+        score -= 0.25 * min(pb / 5, 1.0)
+    return max(0.0, min(1.0, score))
