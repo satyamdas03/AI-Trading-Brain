@@ -33,6 +33,7 @@ REPLAY_DIR.mkdir(parents=True, exist_ok=True)
 CHECKPOINT_FILE = REPLAY_DIR / "checkpoint.json"
 SIMULATED_TRADES_FILE = REPLAY_DIR / "simulated_trades.json"
 SIMULATED_STATE_FILE = REPLAY_DIR / "simulated_state.json"
+DEBATE_RESULTS_FILE = REPLAY_DIR / "debate_results.json"
 
 # How many days to process per invocation (avoid blocking daemon too long)
 MAX_DAYS_PER_RUN = 60
@@ -670,6 +671,136 @@ class HistoricalReplay:
             pass
 
         return {k: v for k, v in result.items() if not k.startswith("_")}
+
+    def run_debate_replay(
+        self,
+        sample_interval: int = 30,
+        lookback_years: int = 3,
+        verbose: bool = True,
+    ) -> list[dict]:
+        """Run PARA-DEBATE on sampled historical dates to validate AI decision-making.
+
+        Every `sample_interval` trading days, runs full 7-agent debate on the top-scored
+        ticker. Records debate verdict vs factor-score decision for comparison.
+
+        Args:
+            sample_interval: How many trading days between debate samples (default 30).
+            lookback_years: How many years back from today to sample (default 3).
+
+        Returns:
+            List of debate result dicts with ticker, date, verdict, consensus, factor_score.
+        """
+        logger.info("=" * 60)
+        logger.info("PARA-DEBATE HISTORICAL REPLAY: validating AI decisions on past data")
+        logger.info(f"  Sample every {sample_interval} days, last {lookback_years} years")
+
+        prices_df = self._load_or_fetch_prices()
+        if prices_df.empty:
+            logger.warning("No price data available for debate replay")
+            return []
+
+        prices_df = self._compute_factor_scores(prices_df)
+        self._prices_df = prices_df
+
+        from strategy.decider import StrategyDecider
+        decider = StrategyDecider()
+
+        all_dates = sorted(prices_df["date"].unique())
+        cutoff = pd.Timestamp.now() - pd.DateOffset(years=lookback_years)
+        recent_dates = [d for d in all_dates if pd.Timestamp(d) >= cutoff]
+        sample_dates = recent_dates[::sample_interval]
+
+        logger.info(f"  {len(sample_dates)} sample dates from {sample_dates[0]} to {sample_dates[-1]}")
+        results = []
+
+        for i, date_str in enumerate(sample_dates):
+            day_data = prices_df[prices_df["date"] == date_str]
+            if day_data.empty:
+                continue
+
+            signals = self._compute_historical_signals(day_data)
+            if signals.empty:
+                continue
+
+            top = signals.head(1).iloc[0]
+            ticker = top["ticker"]
+
+            # Build debate context from available data
+            context = {
+                "ticker": ticker,
+                "composite_score": float(top.get("composite_score", 0.5)),
+                "momentum_score": float(top.get("momentum_score", 0.5)),
+                "quality_score": float(top.get("quality_score", 0.5)),
+                "value_score": float(top.get("value_score", 0.5)),
+                "low_vol_score": float(top.get("low_vol_score", 0.5)),
+                "entry_price": float(top["close"]),
+                "date": str(date_str)[:10],
+                "regime_id": int(top.get("regime_id", 2)),
+            }
+
+            # Add fundamentals if available
+            fundamentals = self._fetch_replay_fundamentals([ticker])
+            if ticker in fundamentals:
+                f = fundamentals[ticker]
+                for k, v in f.items():
+                    if v is not None:
+                        context[f"fund_{k}"] = v
+
+            if verbose:
+                print(f"\n  [{i+1}/{len(sample_dates)}] {date_str} | {ticker} | debating...")
+
+            try:
+                debate = decider.debate(ticker, "US", context)
+                result = {
+                    "sample": i + 1,
+                    "date": str(date_str)[:10],
+                    "ticker": ticker,
+                    "factor_score": float(top.get("composite_score", 0.5)),
+                    "debate_verdict": debate.verdict,
+                    "consensus_score": round(debate.consensus_score, 3),
+                    "investment_thesis": debate.investment_thesis[:500],
+                    "bull_case": debate.bull_case[:300],
+                    "bear_case": debate.bear_case[:300],
+                    "risk_factors": debate.risk_factors,
+                    "agent_stances": [
+                        {"agent": o.agent, "stance": o.stance, "conviction": o.conviction}
+                        for o in debate.agent_outputs
+                    ],
+                    "latency_ms": round(debate.latency_ms, 0),
+                    "error": debate.error,
+                }
+                results.append(result)
+
+                if verbose:
+                    action = decider.verdict_to_action(debate.verdict)
+                    print(f"    → {debate.verdict} (consensus={debate.consensus_score:.2f}) | {action} | {debate.latency_ms:.0f}ms")
+
+            except Exception as e:
+                logger.error(f"Debate failed for {ticker} on {date_str}: {e}")
+                results.append({
+                    "sample": i + 1, "date": str(date_str)[:10], "ticker": ticker,
+                    "factor_score": float(top.get("composite_score", 0.5)),
+                    "debate_verdict": "ERROR", "consensus_score": 0.0,
+                    "error": str(e),
+                })
+
+            # Save intermediate results
+            DEBATE_RESULTS_FILE.write_text(json.dumps(results, indent=2, default=str))
+
+        # Summary
+        buy_signals = [r for r in results if r["debate_verdict"] in ("BUY", "STRONG BUY")]
+        hold_signals = [r for r in results if r["debate_verdict"] == "HOLD"]
+        sell_signals = [r for r in results if r["debate_verdict"] in ("SELL", "STRONG SELL")]
+        errors = [r for r in results if r["debate_verdict"] == "ERROR"]
+
+        logger.info(f"\nDebate Replay Complete: {len(results)} debates")
+        logger.info(f"  BUY: {len(buy_signals)} | HOLD: {len(hold_signals)} | SELL: {len(sell_signals)} | ERRORS: {len(errors)}")
+        if results:
+            avg_consensus = sum(r.get("consensus_score", 0) for r in results) / max(1, len(results) - len(errors))
+            avg_latency = sum(r.get("latency_ms", 0) for r in results if r.get("latency_ms")) / max(1, len(results) - len(errors))
+            logger.info(f"  Avg Consensus: {avg_consensus:.2f} | Avg Latency: {avg_latency:.0f}ms")
+
+        return results
 
     def get_stats(self) -> dict:
         """Current replay stats for dashboard/status."""
