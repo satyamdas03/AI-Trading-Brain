@@ -11,7 +11,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Add polymarket pipeline to path
-_POLY_ROOT = Path(__file__).parent.parent.parent / "polymarketClaude" / "Userspointprojectspolymarket-pipeline"
+_POLY_ROOT = Path(__file__).parent.parent.parent / "polymarket-pipeline"
 if str(_POLY_ROOT) not in sys.path:
     sys.path.insert(0, str(_POLY_ROOT))
 
