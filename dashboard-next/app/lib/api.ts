@@ -1,40 +1,68 @@
 const API_BASE = "http://localhost:8420";
 
-export type PortfolioSnapshot = {
+// ── /api/state ──────────────────────────────────────────────────────
+
+export type OpenPosition = {
+  ticker: string;
+  entry_price: number;
+  entry_date: string;
+  pnl_pct: number;
+  composite_score: number;
+  position_size_pct: number;
+};
+
+export type RecentTrade = {
+  ticker: string;
+  pnl_usd: number;
+  pnl_pct: number;
+  exit_date: string;
+  exit_reason: string;
+};
+
+export type FactorPerf = {
+  factor_name: string;
+  ic_60d: number;
+  hit_rate_60d: number;
+  weight: number;
+};
+
+export type DashboardState = {
+  timestamp: string;
+  uptime_seconds: number;
+  online_learning_enabled: boolean;
+  trend_filter_enabled: boolean;
+  markets_active: string[];
   equity: number;
   cash: number;
-  positions_value: number;
-  num_positions: number;
   daily_pnl: number;
   daily_pnl_pct: number;
-  total_pnl: number;
-  total_pnl_pct: number;
-  drawdown_pct: number;
-  peak_equity: number;
+  cumulative_return_pct: number;
+  num_positions: number;
   spx_return_pct: number;
-  timestamp: string;
+  open_positions: OpenPosition[];
+  recent_trades: RecentTrade[];
+  signals: Signal[];
+  alerts: unknown[];
+  factor_performance: FactorPerf[];
+  regime: RegimeSnapshot | null;
+  weights: Record<string, number>;
+  last_scoring: string | null;
+  last_trades_executed: number;
 };
 
-export type Position = {
-  ticker: string;
-  quantity: number;
-  entry_price: number;
-  current_price: number;
-  market_value: number;
-  unrealized_pnl: number;
-  unrealized_pnl_pct: number;
-  days_held: number;
+// ── /api/equity ─────────────────────────────────────────────────────
+
+export type EquityDatum = {
+  date: string;
+  equity: number;
+  cash: number;
+  daily_pnl: number;
+  daily_pnl_pct: number;
+  cumulative_return_pct: number;
+  spx_return_pct: number;
 };
 
-export type Signal = {
-  ticker: string;
-  composite_score: number;
-  quality_score: number;
-  momentum_score: number;
-  value_score: number;
-  low_vol_score: number;
-  regime_id: number;
-};
+// ── /api/trades ─────────────────────────────────────────────────────
 
 export type Trade = {
   trade_id: string;
@@ -49,38 +77,53 @@ export type Trade = {
   pnl_pct: number | null;
   pnl_usd: number | null;
   exit_reason: string | null;
+  composite_score: number | null;
+  position_size_pct: number | null;
 };
 
-export type ReplayStats = {
-  days_processed: number;
-  trades_taken: number;
-  wins: number;
-  losses: number;
-  win_rate: number;
-  current_equity: number;
-  peak_equity: number;
-  current_drawdown: number;
-  last_processed_date: string;
+// ── /api/signals ────────────────────────────────────────────────────
+
+export type Signal = {
+  ticker: string;
+  composite_score: number;
+  quality_score?: number;
+  momentum_score?: number;
+  value_score?: number;
+  low_vol_score?: number;
+  momentum_percentile?: number;
+  low_vol_percentile?: number;
+  score_1_10?: number;
+  regime_id: number;
 };
 
-export type RegimeData = {
+// ── /api/regime ─────────────────────────────────────────────────────
+
+export type RegimeSnapshot = {
   date: string;
   vix: number;
   spx_vs_200ma: number;
   hy_spread_oas: number;
+  regime_id?: number;
 };
 
-export type DebateRecord = {
-  ticker: string;
-  verdict: string;
-  consensus_score: number;
-  investment_thesis: string;
-  latency_ms: number;
+// ── Migration ───────────────────────────────────────────────────────
+
+export type MigrationState = {
+  gates: {
+    consistency: string;
+    drawdown: string;
+    stability: string;
+    ready: boolean;
+    days_green: number;
+  };
+  ramp: Record<string, unknown>;
 };
 
-export async function fetchPortfolio(): Promise<PortfolioSnapshot | null> {
+// ── fetch helpers ───────────────────────────────────────────────────
+
+export async function fetchState(): Promise<DashboardState | null> {
   try {
-    const res = await fetch(`${API_BASE}/api/portfolio`);
+    const res = await fetch(`${API_BASE}/api/state`);
     if (!res.ok) return null;
     return res.json();
   } catch {
@@ -88,9 +131,9 @@ export async function fetchPortfolio(): Promise<PortfolioSnapshot | null> {
   }
 }
 
-export async function fetchPositions(): Promise<Position[]> {
+export async function fetchEquity(days = 90): Promise<EquityDatum[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/positions`);
+    const res = await fetch(`${API_BASE}/api/equity?days=${days}`);
     if (!res.ok) return [];
     return res.json();
   } catch {
@@ -98,9 +141,11 @@ export async function fetchPositions(): Promise<Position[]> {
   }
 }
 
-export async function fetchSignals(): Promise<Signal[]> {
+export async function fetchTrades(limit = 20, status?: string): Promise<Trade[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/signals`);
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (status) params.set("status", status);
+    const res = await fetch(`${API_BASE}/api/trades?${params}`);
     if (!res.ok) return [];
     return res.json();
   } catch {
@@ -108,9 +153,9 @@ export async function fetchSignals(): Promise<Signal[]> {
   }
 }
 
-export async function fetchTrades(limit = 20): Promise<Trade[]> {
+export async function fetchSignals(limit = 10): Promise<Signal[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/trades?limit=${limit}`);
+    const res = await fetch(`${API_BASE}/api/signals?limit=${limit}`);
     if (!res.ok) return [];
     return res.json();
   } catch {
@@ -118,22 +163,22 @@ export async function fetchTrades(limit = 20): Promise<Trade[]> {
   }
 }
 
-export async function fetchReplayStats(): Promise<ReplayStats | null> {
+export async function fetchRegime(days = 90): Promise<RegimeSnapshot[]> {
   try {
-    const res = await fetch(`${API_BASE}/api/replay`);
+    const res = await fetch(`${API_BASE}/api/regime?days=${days}`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchMigration(): Promise<MigrationState | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/migration`);
     if (!res.ok) return null;
     return res.json();
   } catch {
     return null;
-  }
-}
-
-export async function fetchRegimeHistory(limit = 30): Promise<RegimeData[]> {
-  try {
-    const res = await fetch(`${API_BASE}/api/regime?limit=${limit}`);
-    if (!res.ok) return [];
-    return res.json();
-  } catch {
-    return [];
   }
 }

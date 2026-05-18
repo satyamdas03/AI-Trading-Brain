@@ -1,14 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
-
-type WSMessage = {
-  type: string;
-  data: unknown;
-};
+import { useEffect, useRef, useState } from "react";
+import type { DashboardState } from "@/app/lib/api";
 
 export function useWebSocket() {
-  const [lastMessage, setLastMessage] = useState<WSMessage | null>(null);
+  const [state, setState] = useState<DashboardState | null>(null);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -29,10 +25,10 @@ export function useWebSocket() {
       ws.onerror = () => ws.close();
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data);
-          setLastMessage(msg);
+          const data = JSON.parse(event.data) as DashboardState;
+          setState(data);
         } catch {
-          // ignore non-JSON messages
+          // ignore non-JSON
         }
       };
     }
@@ -41,5 +37,5 @@ export function useWebSocket() {
     return () => wsRef.current?.close();
   }, []);
 
-  return { lastMessage, connected };
+  return { state, connected };
 }

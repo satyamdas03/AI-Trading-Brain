@@ -27,6 +27,7 @@ from config import (
     IN_MARKET_ENABLED, IN_UNIVERSE_SIZE, CRYPTO_ENABLED, CRYPTO_UNIVERSE_SIZE,
     CRYPTO_TOP_N, POLYMARKET_ENABLED, POLYMARKET_MAX_PER_MARKET,
     SENTIMENT_ENABLED, SENTIMENT_SCAN_INTERVAL_MINUTES,
+    POLYMARKET_SCAN_INTERVAL_MINUTES,
 )
 from scheduler import BrainScheduler, get_ny_time
 
@@ -713,7 +714,7 @@ def run_sentiment_scan():
             return
 
         logger.info(
-            f"Sentiment scan: {scan.tweets_scanned} tweets → "
+            f"Sentiment scan: {scan.tweets_scanned} tweets -> "
             f"{scan.bullish_count}B/{scan.bearish_count}S "
             f"({scan.overall_sentiment}), {len(scan.ticker_signals)} ticker signals, "
             f"{scan.latency_ms:.0f}ms"
@@ -810,7 +811,7 @@ def main():
 
     if CRYPTO_ENABLED:
         sched.add_daily("crypto_scoring", run_crypto_scoring, hour=6, minute=22)
-        sched.add_interval("crypto_monitor", run_crypto_monitor, hours=4)
+        sched.add_interval("crypto_monitor", run_crypto_monitor, minutes=240)
 
     if POLYMARKET_ENABLED:
         sched.add_interval("polymarket_scan", run_polymarket_scan, minutes=POLYMARKET_SCAN_INTERVAL_MINUTES)

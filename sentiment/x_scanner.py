@@ -489,7 +489,7 @@ class XSentimentScanner:
         scan.latency_ms = (time.perf_counter() - start) * 1000
 
         logger.info(
-            f"Sentiment scan: {scan.tweets_scanned} tweets → "
+            f"Sentiment scan: {scan.tweets_scanned} tweets -> "
             f"{scan.bullish_count}B/{scan.bearish_count}S/{scan.tweets_scanned - scan.bullish_count - scan.bearish_count}N "
             f"({scan.overall_sentiment}), {len(scan.ticker_signals)} ticker signals, "
             f"{scan.latency_ms:.0f}ms"

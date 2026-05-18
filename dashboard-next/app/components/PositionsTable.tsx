@@ -1,6 +1,15 @@
 "use client";
 
-import type { Position } from "@/app/lib/api";
+type Position = {
+  ticker: string;
+  quantity: number;
+  entry_price: number;
+  current_price: number;
+  market_value: number;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+  days_held: number;
+};
 
 export default function PositionsTable({ positions }: { positions: Position[] }) {
   if (!positions || positions.length === 0) {
