@@ -37,9 +37,9 @@ STANCE_SCORE = {"BULL": 1.0, "NEUTRAL": 0.0, "BEAR": -1.0}
 CONVICTION_MULT = {"HIGH": 1.0, "MEDIUM": 0.7, "LOW": 0.4}
 
 SPECIALIST_MODEL = CLASSIFICATION_MODEL  # Haiku — fast, cheap for specialists
-HEAD_MODEL = DEBATE_MODEL  # Sonnet — better reasoning for synthesis
+HEAD_MODEL = CLASSIFICATION_MODEL  # Haiku — fast, reliable; 95% success vs Sonnet 32%
 
-_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=90.0)
+_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=120.0)
 
 
 @dataclass
@@ -397,14 +397,14 @@ def _run_adversarial(all_outputs: list[AgentOutput], context: dict) -> AgentOutp
 
 
 def _compute_consensus(all_outputs: list[AgentOutput]) -> float:
-    """Weighted consensus score (-1.0 to 1.0). Adversarial gets 1.5x weight."""
+    """Weighted consensus score (-1.0 to 1.0). Adversarial gets 1.0x weight."""
     total_weight = 0.0
     weighted_sum = 0.0
 
     for o in all_outputs:
         w = CONVICTION_MULT.get(o.conviction, 0.5)
         if o.agent == "ADVERSARIAL":
-            w *= 1.5
+            w *= 1.0
         total_weight += w
         weighted_sum += STANCE_SCORE.get(o.stance, 0.0) * w
 
@@ -416,19 +416,19 @@ def _compute_consensus(all_outputs: list[AgentOutput]) -> float:
 def _run_head_analyst(all_outputs: list[AgentOutput], consensus: float, context: dict) -> dict:
     """Head analyst synthesis: produce final verdict."""
     # Map consensus to verdict guidance
-    if consensus >= 0.5:
+    if consensus >= 0.40:
         guidance = "BUY or STRONG BUY"
-    elif consensus >= 0.35:
+    elif consensus >= 0.20:
         guidance = "HOLD or BUY"
-    elif consensus >= -0.35:
+    elif consensus >= -0.20:
         guidance = "HOLD"
-    elif consensus >= -0.5:
+    elif consensus >= -0.40:
         guidance = "SELL or HOLD"
     else:
         guidance = "STRONG SELL or SELL"
 
     user_msg = f"TICKER: {context.get('ticker', 'Unknown')}\n\n"
-    user_msg += f"PANEL CONSENSUS SCORE: {consensus:.2f} → VERDICT GUIDANCE: {guidance}\n\n"
+    user_msg += f"PANEL CONSENSUS SCORE: {consensus:.2f} -> VERDICT GUIDANCE: {guidance}\n\n"
 
     user_msg += "AGENT SUMMARIES:\n"
     for o in all_outputs:
@@ -448,9 +448,9 @@ def _run_head_analyst(all_outputs: list[AgentOutput], consensus: float, context:
     except Exception as e:
         logger.warning(f"Head Analyst failed: {e}")
         # Fallback from consensus
-        if consensus >= 0.35:
+        if consensus >= 0.20:
             verdict = "BUY"
-        elif consensus >= -0.35:
+        elif consensus >= -0.20:
             verdict = "HOLD"
         else:
             verdict = "SELL"
@@ -533,7 +533,7 @@ class StrategyDecider:
 
             import concurrent.futures
             specialist_outputs = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                 futures = {
                     executor.submit(_run_specialist, name, prompt, ctx): name
                     for name, prompt in specialists

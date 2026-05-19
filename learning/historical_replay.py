@@ -78,7 +78,7 @@ class HistoricalReplay:
     def feedback(self):
         if self._feedback_loop is None:
             from learning.feedback import FeedbackLoop
-            self._feedback_loop = FeedbackLoop(lr=0.01, force_enable=True)
+            self._feedback_loop = FeedbackLoop(lr=0.05, force_enable=True)
         return self._feedback_loop
 
     def run(self, max_days: int = MAX_DAYS_PER_RUN, verbose: bool = False) -> ReplayStats:
@@ -773,7 +773,7 @@ class HistoricalReplay:
 
                 if verbose:
                     action = decider.verdict_to_action(debate.verdict)
-                    print(f"    → {debate.verdict} (consensus={debate.consensus_score:.2f}) | {action} | {debate.latency_ms:.0f}ms")
+                    print(f"    -> {debate.verdict} (consensus={debate.consensus_score:.2f}) | {action} | {debate.latency_ms:.0f}ms")
 
             except Exception as e:
                 logger.error(f"Debate failed for {ticker} on {date_str}: {e}")

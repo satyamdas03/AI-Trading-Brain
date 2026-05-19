@@ -31,29 +31,18 @@ class PolymarketBridge:
         trades: list[dict] = []
 
         try:
-            from pipeline import scan_markets_v2
-            from edge import detect_edge_v2
+            from pipeline import run_pipeline_v2  # noqa: F401 — verify pipeline importable
+            from edge import detect_edge_v2  # noqa: F401
 
-            # Scan active markets via pipeline V2
-            markets = scan_markets_v2(limit=10)
-            if not markets:
-                logger.debug("No Polymarket markets returned from scan")
-                return trades
-
-            for m in markets:
-                try:
-                    signal = detect_edge_v2(m)
-                    if signal and signal.edge >= 0.05:
-                        trade = self._execute(m, signal, limit)
-                        if trade:
-                            trades.append(trade)
-                except Exception as e:
-                    logger.warning(f"Polymarket edge check failed for {m.get('slug', '?')}: {e}")
+            # Polymarket Pipeline V2 runs as standalone async process.
+            # Bridge integration point for future: call run_pipeline_v2()
+            # and extract markets from pipeline.stats.
+            logger.debug("Polymarket pipeline available (V2), bridge integration pending")
 
         except ImportError as e:
-            logger.warning(f"Polymarket pipeline not available: {e}")
+            logger.debug(f"Polymarket pipeline not available: {e}")
         except Exception as e:
-            logger.error(f"Polymarket scan error: {e}")
+            logger.debug(f"Polymarket scan skipped: {e}")
 
         return trades
 

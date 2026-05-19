@@ -102,7 +102,7 @@ def compute_factor_ic(
                 scores.append(score)
                 returns.append(pnl)
 
-        if len(scores) < 5:
+        if len(scores) < 2:
             ic_results[factor] = 0.0
             continue
 
