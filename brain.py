@@ -436,7 +436,7 @@ def run_market_close_journal():
             if te2("trades"):
                 today_closed = rest_get("trades",
                     select="*",
-                    filters=f"exit_date.eq.{today}",
+                    filters={"exit_date": today},
                     limit=50)
                 if today_closed:
                     feedback = FeedbackLoop()
