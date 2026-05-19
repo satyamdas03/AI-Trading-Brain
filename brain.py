@@ -426,6 +426,8 @@ def run_market_close_journal():
             logger.info(f"Trades: {summary['win_count']}W/{summary['loss_count']}L "
                         f"(WR: {summary['win_rate']:.0%}) | Total P&L: ${summary['total_pnl']:+,.2f}")
 
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
         # Phase 4: Feedback loop — learn from closed trades
         try:
             from db.client import rest_get, table_exists as te2
@@ -448,7 +450,6 @@ def run_market_close_journal():
             logger.exception("Feedback loop failed")
 
         # Save macro to regime_history
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if table_exists("regime_history"):
             rest_upsert("regime_history", [{
                 "date": today,
@@ -460,7 +461,7 @@ def run_market_close_journal():
                 "yield_spread_2y10y": macro.get("yield_spread_2y10y", 0.10),
                 "cpi_yoy": macro.get("cpi_yoy", 3.0),
                 "fed_funds_rate": macro.get("fed_funds_rate", 5.25),
-            }])
+            }], on_conflict="date")
 
     except Exception:
         logger.exception("Market close journal failed")
