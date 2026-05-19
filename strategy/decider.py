@@ -464,8 +464,12 @@ def _parse_head_output(raw: str) -> dict:
     """Parse head analyst synthesis output. Handles markdown formatting."""
     result = {"verdict": "HOLD", "investment_thesis": "", "bull_case": "", "bear_case": "", "risk_factors": []}
 
-    # Normalize: strip markdown bold, handle **HEADER:** patterns
+    # Normalize: strip markdown bold markers
     cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', raw)
+    # Normalize: strip markdown headers (## HEADER -> HEADER)
+    cleaned = re.sub(r'^#{1,4}\s+', '', cleaned, flags=re.MULTILINE)
+    # Normalize: horizontal rules (---) and other decorative lines
+    cleaned = re.sub(r'^---+\s*$', '', cleaned, flags=re.MULTILINE)
 
     m = re.search(r'VERDICT:\s*(STRONG\s*BUY|BUY|HOLD|SELL|STRONG\s*SELL)', cleaned, re.IGNORECASE)
     if m:
@@ -473,7 +477,7 @@ def _parse_head_output(raw: str) -> dict:
 
     for label, key in [("INVESTMENT_THESIS", "investment_thesis"), ("INVESTMENT THESIS", "investment_thesis")]:
         m = re.search(
-            rf'{label}:\s*\n?(.*?)(?=\n\w+(?:_CASE|\s*CASE|\s*THESIS):|\nVERDICT:|\nRISK\s*FACTORS:|\Z)',
+            rf'{label}:?\s*\n?(.*?)(?=\n\w[\w\s]*(?:_CASE|\s*CASE|\s*THESIS):?|\nVERDICT:|\nRISK\s*FACTORS:?|\n[A-Z][A-Z\s]+:|\n---|\Z)',
             cleaned, re.DOTALL | re.IGNORECASE,
         )
         if m and m.group(1).strip():
@@ -481,19 +485,19 @@ def _parse_head_output(raw: str) -> dict:
             break
 
     for label in ("BULL_CASE", "BULL CASE"):
-        m = re.search(rf'{label}:\s*\n?(.*?)(?=\n\w+(?:_CASE|\s*CASE):|\nRISK\s*FACTORS:|\Z)', cleaned, re.DOTALL | re.IGNORECASE)
+        m = re.search(rf'{label}:?\s*\n?(.*?)(?=\n\w[\w\s]*(?:_CASE|\s*CASE):?|\nRISK\s*FACTORS:?|\n[A-Z][A-Z\s]+:|\n---|\Z)', cleaned, re.DOTALL | re.IGNORECASE)
         if m and m.group(1).strip():
             result["bull_case"] = m.group(1).strip()[:600]
             break
 
     for label in ("BEAR_CASE", "BEAR CASE"):
-        m = re.search(rf'{label}:\s*\n?(.*?)(?=\n\w+(?:_CASE|\s*CASE):|\nRISK\s*FACTORS:|\Z)', cleaned, re.DOTALL | re.IGNORECASE)
+        m = re.search(rf'{label}:?\s*\n?(.*?)(?=\n\w[\w\s]*(?:_CASE|\s*CASE):?|\n[A-Z][A-Z\s]+:|\n---|\Z)', cleaned, re.DOTALL | re.IGNORECASE)
         if m and m.group(1).strip():
             result["bear_case"] = m.group(1).strip()[:600]
             break
 
     for label in ("RISK_FACTORS", "RISK FACTORS"):
-        m = re.search(rf'{label}:\s*\n(.*?)(?=\n\w+(?:_CASE|\s*CASE|\s*THESIS):|\Z)', cleaned, re.DOTALL | re.IGNORECASE)
+        m = re.search(rf'{label}:?\s*\n(.*?)(?=\n\w[\w\s]*(?:_CASE|\s*CASE|\s*THESIS):?|\n[A-Z][A-Z\s]+:|\n---|\Z)', cleaned, re.DOTALL | re.IGNORECASE)
         if m:
             pts = [re.sub(r'^[-•*\d.\s]+', '', p).strip() for p in m.group(1).strip().split('\n') if p.strip() and len(p.strip()) > 5]
             result["risk_factors"] = pts[:5]
