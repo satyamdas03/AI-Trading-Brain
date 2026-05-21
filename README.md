@@ -2,7 +2,7 @@
 
 Unified autonomous trading system combining quantitative factor signals, Claude-powered multi-agent reasoning (PARA-DEBATE), and automated execution via Alpaca.
 
-**Status:** Phase 5 Complete — Pre-market scoring, market-open execution, intraday monitoring, weekend retraining, X/Twitter sentiment scanner, historical replay engine all operational. Paper trading mode (execution gate closed).
+**Status:** Phase 6 Active — Live paper trading with 7-agent PARA-DEBATE, multi-source free sentiment (Reddit RSS + Finnhub + RSS), sector diversification, position reconciliation, auto-restart watchdog. Daily scoring + market-open execution + intraday monitoring operational.
 
 ---
 
@@ -42,8 +42,12 @@ ai-trading-brain/
 │   ├── attribution.py        # Factor IC/ICIR attribution
 │   └── decay.py              # Strategy decay detection (3-tier alerts)
 │
-├── sentiment/                # X/Twitter Sentiment Scanner
-│   └── x_scanner.py          # Financial tweet classification via Claude Haiku
+├── sentiment/                # Multi-Source Free Sentiment Pipeline
+│   ├── multi_scanner.py       # Unified orchestrator (Reddit + Finnhub + RSS → classify → aggregate)
+│   ├── headline_scanner.py    # Reddit RSS (6 trading subs) + Financial RSS (6 news feeds)
+│   ├── finnhub_scanner.py     # Finnhub free tier market news (60 req/min)
+│   ├── reddit_scanner.py      # PRAW-based Reddit scanner (optional, RSS preferred)
+│   └── x_scanner.py           # X/Twitter scanner (deprecated — credits depleted)
 │
 ├── migration/                # Paper → Live Migration Gates
 │   ├── live_gate.py          # 3-gate system: Consistency, Drawdown, Stability
@@ -69,6 +73,8 @@ ai-trading-brain/
 │   ├── run_replay_now.py     # Manually trigger replay engine
 │   ├── verify.py             # System integrity check
 │   └── ...
+│
+├── watchdog.ps1              # Auto-restart daemon watchdog (checks health every 30s)
 │
 ├── data/                     # Local data (gitignored)
 │   ├── brain_state.json      # Last scoring results
@@ -114,7 +120,9 @@ X/Twitter sentiment data enriches debate contexts when available (see Sentiment 
 - **Entry:** Market orders at 9:37 AM ET
 - **Bracket orders:** Take-profit (7%) + Stop-loss (6%) placed immediately on fill
 - **Time exit:** Auto-close after 21 days if neither TP nor SL hit
-- **Position sizing:** Equal-weight by signal rank, capped at 10% per position, 30% per sector
+- **Position sizing:** Equal-weight by signal rank, capped at 10% per position
+- **Sector diversification:** Max 1 position per GICS sector (`MAX_POSITIONS_PER_SECTOR=1`) — prevents signal monoculture
+- **Position reconciliation:** Detects positions closed by Alpaca bracket fills, syncs with DB — runs in intraday monitor + close journal
 - **Trend filter:** Blocks entries when SPX below 200-day moving average
 - **Gates:** `DRY_RUN` and `TRADE_ENABLED` both checked before live orders
 
@@ -143,15 +151,18 @@ Simulates full strategy on 20-year price data during market-closed hours:
 
 Gradient-based factor weight optimization from replay data. **Currently disabled** (`ONLINE_LEARNING_ENABLED=false`) — 19-year replay showed equal weights (+141.9%) outperformed learned weights (+119.2%) by $22,716 on $100K seed. See learning section below.
 
-### 6. X/Twitter Sentiment Scanner (`sentiment/x_scanner.py`)
+### 6. Multi-Source Sentiment Pipeline (`sentiment/multi_scanner.py`)
 
-Classifies financial tweets using Claude Haiku following Grox ContentClassifier pattern:
+Classifies financial content from 3 free sources using Claude Haiku:
 
-- 3-step pipeline: `_to_convo()` → `_sample()` → `_parse()`
-- Sources: X API v2 (OAuth2) → Nitter mirrors → demo data fallback
-- 18 financial accounts monitored, 13 cashtags tracked
+- **Reddit RSS:** 6 trading subreddits (r/wallstreetbets, r/stocks, r/investing, r/StockMarket, r/trading212, r/options) — free, no API keys
+- **Finnhub:** Market news + company-specific news — free tier 60 req/min
+- **Financial RSS:** 6 news feeds (Yahoo Finance, CNBC, MarketWatch, Seeking Alpha, Investing.com, Google Finance)
+- Deduplication by content hash, ticker filter, batch classification via Claude Haiku
 - Output: SentimentScan with per-ticker net_score, confidence, bull/bear counts
 - Enriches PARA-DEBATE contexts during market-open routine
+- **Zero recurring cost** beyond Anthropic API (~$0.02/scan for 80 items)
+- X/Twitter scanner (`x_scanner.py`) deprecated due to API credit depletion
 
 ### 7. Live Dashboard (`dashboard/server.py`)
 
@@ -189,7 +200,7 @@ The scheduler runs 13 routines on NY time:
 | 8 | Crypto Scan | Every 30 min | Top-20 crypto scoring (momentum + low-vol only) |
 | 9 | India Scan | 9:15 AM IST | NSE 200 signal computation |
 | 10 | Polymarket Scan | Every 30 min | Pipeline V2 bridge: classify → detect edge → execute |
-| 11 | X Sentiment Scanner | Every 30 min | Financial tweet classification |
+| 11 | Sentiment Scanner | Every 30 min | Multi-source (Reddit+Finnhub+RSS) financial content classification |
 | 12 | Replay Engine | Market-closed hrs | 20-year historical simulation |
 | 13 | Decay Monitor | Hourly | Strategy drift detection, 3-tier alerts |
 
@@ -200,7 +211,7 @@ The scheduler runs 13 routines on NY time:
 | Take-Profit | +7% | Target 1.16:1 reward/risk |
 | Stop-Loss | -6% | Expected value +1.54%/trade at 58% WR |
 | Max Position | 10% of equity | Single-ticker concentration cap |
-| Max Sector | 30% of equity | Sector diversification |
+| Max Per Sector | 1 position | Sector diversification (prevents monoculture) |
 | Max Drawdown | 10% | Circuit breaker |
 | Daily Loss Limit | $100 | Stop-loss for session |
 | Time Exit | 21 days | Remove stale positions |
@@ -231,7 +242,7 @@ The scheduler runs 13 routines on NY time:
 
 ```bash
 # Clone
-git clone https://github.com/satyamdas/AI-Trading-Brain.git
+git clone https://github.com/satyamdas03/AI-Trading-Brain.git
 cd AI-Trading-Brain
 
 # Install dependencies
@@ -255,7 +266,10 @@ See `.env.example` for full list. Critical ones:
 | `ALPACA_PAPER_TRADE` | `true` = paper, `false` = live |
 | `TRADE_ENABLED` | **GATE**: `true` to execute real orders |
 | `DRY_RUN` | `true` = log only, no API calls |
-| `SENTIMENT_ENABLED` | `true` to activate X/Twitter scanner |
+| `SENTIMENT_ENABLED` | `true` to activate multi-source sentiment scanner |
+| `SENTIMENT_SOURCES` | `reddit,finnhub,rss` — which free sources to use |
+| `SENTIMENT_MAX_ITEMS` | Max items to classify per scan (default 80) |
+| `MAX_POSITIONS_PER_SECTOR` | Max positions per GICS sector (default 1) |
 | `ONLINE_LEARNING_ENABLED` | `true` to enable weight optimization |
 
 ### Run
@@ -290,9 +304,9 @@ Equal weights beat learned weights by $22,716. Reason: learned weights overfit t
 | Phase 2 | Done | Alpaca execution engine with bracket orders |
 | Phase 3 | Done | 7-agent PARA-DEBATE strategy decider |
 | Phase 4 | Done | Online learning + decay detection + replay engine |
-| Phase 5 | Done | Daemon scheduler + dashboard + migration gates + X sentiment |
-| Phase 6 | Planned | Multi-asset live (India + Crypto + Polymarket) |
-| Phase 7 | Planned | Next.js standalone dashboard UI |
+| Phase 5 | Done | Daemon scheduler + dashboard + migration gates + multi-source sentiment |
+| Phase 6 | Active | Live paper trading + sector diversification + position reconciliation + watchdog |
+| Phase 7 | Done | Next.js standalone dashboard UI |
 
 ## Key Design Decisions
 
@@ -310,6 +324,21 @@ MIT
 ---
 
 ## Changelog
+
+### 2026-05-21
+- **Bug #17 fixed (CRITICAL):** `get_last_price()` switched from `get_bars()` to `get_latest_trade()` — paper accounts lack data API subscription, causing ALL tickers to silently fail price lookup. Engine now correctly fetches real-time prices.
+- **Sector diversification enforced:** `MAX_POSITIONS_PER_SECTOR=1` prevents signal monoculture (all-insurance top-5). Sector data sourced from yfinance `info.sector`.
+- **Multi-source free sentiment pipeline:** Reddit RSS (6 subs) + Finnhub (60 req/min free) + Financial RSS (6 feeds) → Claude Haiku classification. Zero X/Twitter cost. 80 items/scan, 5 ticker signals, ~$0.02 Haiku cost.
+- **Position reconciliation:** `engine.reconcile_positions()` detects Alpaca bracket TP/SL fills, syncs closed positions to DB. Called from intraday monitor + close journal.
+- **Daemon startup guards:** Port conflict check (`_check_port_available`) prevents duplicate daemons. Time-aware initial scoring (only runs 5:00-9:37 AM ET) prevents midnight scoring on restart.
+- **Unicode logging fix:** `→` replaced with `->`, `★` replaced with `*` — prevents Windows cp1252 encoding crashes in logs.
+- **Auto-restart watchdog:** `watchdog.ps1` — PowerShell script checks port 8420 every 30s, auto-kills stale processes, restarts daemon with health verification.
+- **Improved engine logging:** All-signal-skip warning with ticker list when `placed == 0` — surfaces data subscription issues immediately.
+
+### 2026-05-20
+- May 20 market open: 0 trades (all 5 insurance signals received HOLD verdicts from debate + Bug #17 silent failure blocked CINF BUY)
+- Position reconciliation identified 2 closed positions (GLD -5.5%, XLE +9.0%) — bracket fills working correctly
+- Debug infrastructure: `scripts/_debug_cinf_archived.py` for isolated engine testing
 
 ### 2026-05-17
 - **Critical fix:** Missing comma in `execution/engine.py:99` (bracket order dict) — would crash execution module

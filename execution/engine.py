@@ -13,7 +13,10 @@ from typing import Optional
 
 import pandas as pd
 
-from config import DRY_RUN, MAX_POSITION_PCT, DAILY_TRADE_CAP, SIGNAL_TOP_N, TAKE_PROFIT_PCT, STOP_LOSS_PCT
+from config import (
+    DRY_RUN, MAX_POSITION_PCT, DAILY_TRADE_CAP, SIGNAL_TOP_N,
+    TAKE_PROFIT_PCT, STOP_LOSS_PCT, MAX_POSITIONS_PER_SECTOR,
+)
 from execution.alpaca_client import AlpacaClient, AlpacaPosition
 from execution.order_manager import OrderManager
 
@@ -33,6 +36,8 @@ class ExecutionEngine:
         signals: pd.DataFrame,
         account_equity: float,
         max_new_positions: int = DAILY_TRADE_CAP,
+        fundamentals: dict[str, dict] | None = None,
+        max_per_sector: int = MAX_POSITIONS_PER_SECTOR,
     ) -> list[dict]:
         """Execute buys for top-N signals at market open.
 
@@ -40,6 +45,8 @@ class ExecutionEngine:
             signals: DataFrame from signals/aggregator, sorted by composite_score desc
             account_equity: current account equity for position sizing
             max_new_positions: cap on new positions per session
+            fundamentals: ticker -> {sector, ...} for sector diversification
+            max_per_sector: max positions per GICS sector (default 1)
 
         Returns:
             List of trade result dicts for logging
@@ -54,12 +61,23 @@ class ExecutionEngine:
 
         trades = []
         placed = 0
+        sector_counts: dict[str, int] = {}
 
         for _, row in signals.iterrows():
             if placed >= max_new_positions:
                 break
 
             ticker = row["ticker"]
+
+            # --- Sector diversification enforcement ---
+            if fundamentals and max_per_sector > 0:
+                sector = (fundamentals.get(ticker, {}) or {}).get("sector", "Unknown")
+                if sector != "Unknown" and sector_counts.get(sector, 0) >= max_per_sector:
+                    logger.info(
+                        f"Skipping {ticker}: sector '{sector}' at cap "
+                        f"({sector_counts[sector]}/{max_per_sector})"
+                    )
+                    continue
 
             # Skip if already in position
             if ticker in existing:
@@ -71,11 +89,12 @@ class ExecutionEngine:
 
             try:
                 price = self._client.get_last_price(ticker)
-            except Exception:
-                logger.warning(f"No price for {ticker}, skipping")
+            except Exception as exc:
+                logger.warning(f"No price for {ticker}, skipping: {exc}")
                 continue
 
             if not price or price <= 0:
+                logger.warning(f"Invalid price for {ticker}: {price!r}, skipping")
                 continue
 
             qty = max(1, int(position_value / price))
@@ -121,6 +140,20 @@ class ExecutionEngine:
 
             trades.append(trade_result)
             placed += 1
+
+            # Track sector for diversification cap
+            if fundamentals and max_per_sector > 0:
+                sector = (fundamentals.get(ticker, {}) or {}).get("sector", "Unknown")
+                if sector != "Unknown":
+                    sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+        if placed == 0 and len(signals) > 0:
+            skipped_tickers = signals["ticker"].tolist()
+            logger.warning(
+                f"All {len(signals)} signals skipped ({skipped_tickers}). "
+                f"Existing: {list(existing.keys())}. "
+                f"Check get_last_price() for data subscription issues."
+            )
 
         logger.info(f"Execution complete: {placed} new positions, {len(existing)} existing")
         return trades
@@ -178,3 +211,70 @@ class ExecutionEngine:
             "unrealized_pnl": sum(p.unrealized_pnl for p in positions),
             "account_status": acc.status,
         }
+
+    def reconcile_positions(self) -> list[dict]:
+        """Sync Alpaca positions with local DB open trades.
+
+        Detects positions closed by Alpaca bracket orders (TP/SL fills)
+        and returns closure records. Does NOT write to DB — caller handles that.
+
+        Returns:
+            List of close-result dicts for any trades that were auto-closed by Alpaca.
+        """
+        from db.client import rest_get
+
+        alpaca_positions = {p.symbol: p for p in self._client.get_positions()}
+        try:
+            db_open = rest_get("trades", select="*", filters={"status": "eq.OPEN"})
+        except Exception as e:
+            logger.warning(f"reconcile_positions: DB query failed: {e}")
+            return []
+
+        closed_trades = []
+        for trade in (db_open or []):
+            ticker = trade["ticker"]
+            if ticker in alpaca_positions:
+                continue  # still open at Alpaca
+
+            # Position gone from Alpaca — bracket leg filled
+            entry_price = trade.get("entry_price", 0)
+            qty = trade.get("quantity", 0)
+
+            # Get exit price from last trade or current price
+            try:
+                exit_price = self._client.get_last_price(ticker)
+            except Exception:
+                exit_price = entry_price  # fallback, won't be exact
+
+            pnl_usd = (exit_price - entry_price) * qty if entry_price and exit_price else 0
+            pnl_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0
+
+            # Determine exit reason: TP or SL based on price direction
+            tp_price = entry_price * (1 + TAKE_PROFIT_PCT)
+            sl_price = entry_price * (1 - STOP_LOSS_PCT)
+            if exit_price and exit_price >= tp_price * 0.995:
+                reason = "take_profit"
+            elif exit_price and exit_price <= sl_price * 1.005:
+                reason = "stop_loss"
+            else:
+                reason = "alpaca_bracket"
+
+            close_record = {
+                "trade_id": trade.get("trade_id", ""),
+                "ticker": ticker,
+                "status": "CLOSED",
+                "exit_price": exit_price,
+                "exit_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "exit_reason": reason,
+                "pnl_usd": round(pnl_usd, 2),
+                "pnl_pct": round(pnl_pct, 4),
+                "quantity": qty,
+                "entry_price": entry_price,
+            }
+            closed_trades.append(close_record)
+            logger.info(
+                f"Reconciled CLOSE: {ticker} @ ${exit_price:.2f} "
+                f"({reason}), P&L=${pnl_usd:.2f} ({pnl_pct:.1%})"
+            )
+
+        return closed_trades

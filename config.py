@@ -42,6 +42,7 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 # --- Pipeline thresholds ---
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.10"))
 MAX_SECTOR_PCT = float(os.getenv("MAX_SECTOR_PCT", "0.30"))
+MAX_POSITIONS_PER_SECTOR = int(os.getenv("MAX_POSITIONS_PER_SECTOR", "1"))
 MAX_DRAWDOWN_PCT = float(os.getenv("MAX_DRAWDOWN_PCT", "0.10"))
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "100.0"))
 DAILY_TRADE_CAP = int(os.getenv("DAILY_TRADE_CAP", "5"))
@@ -90,9 +91,11 @@ STOP_LOSS_PCT = 0.06
 # --- Trend Filter (block entries when SPX below 200MA) ---
 TREND_FILTER_ENABLED = os.getenv("TREND_FILTER_ENABLED", "true").lower() == "true"
 
-# --- X Sentiment Scanner ---
+# --- Multi-Source Sentiment Scanner (free: Reddit + Finnhub + RSS) ---
 SENTIMENT_ENABLED = os.getenv("SENTIMENT_ENABLED", "false").lower() == "true"
 SENTIMENT_SCAN_INTERVAL_MINUTES = int(os.getenv("SENTIMENT_SCAN_INTERVAL_MINUTES", "30"))
+SENTIMENT_SOURCES = os.getenv("SENTIMENT_SOURCES", "reddit,finnhub,rss")
+SENTIMENT_MAX_ITEMS = int(os.getenv("SENTIMENT_MAX_ITEMS", "80"))
 
 # --- Dashboard ---
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8420"))

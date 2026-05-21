@@ -182,10 +182,10 @@ class AlpacaClient:
         return bars.df.reset_index()
 
     def get_last_price(self, symbol: str) -> Optional[float]:
+        """Get most recent trade price. Uses latest-trade endpoint (works on paper accounts)."""
         try:
-            bars = self._rest.get_bars(symbol, "1Min", limit=1)
-            if bars.df.empty:
-                return None
-            return float(bars.df["close"].iloc[-1])
-        except Exception:
+            trade = self._rest.get_latest_trade(symbol)
+            return float(trade.price)
+        except Exception as e:
+            logger.warning(f"get_last_price failed for {symbol}: {e}")
             return None

@@ -194,12 +194,14 @@ def run_market_open_execution():
         # 4. Enrich each ticker with full context
         macro = fetch_macro_snapshot()
         contexts = {}
+        fundamentals_map: dict[str, dict] = {}
         for _, row in top_tickers.iterrows():
             ticker = row["ticker"]
             try:
                 fund = fetch_fundamentals(ticker)
             except Exception:
                 fund = {}
+            fundamentals_map[ticker] = fund
 
             context = {
                 "ticker": ticker,
@@ -277,7 +279,10 @@ def run_market_open_execution():
         logger.info(f"Executing buys for: {buy_signals}")
 
         acc = client.get_account()
-        trades = engine.execute_market_open(buy_df, acc.equity)
+        trades = engine.execute_market_open(
+            buy_df, acc.equity,
+            fundamentals=fundamentals_map,
+        )
 
         # 8. Attach debate data to trades
         debate_map = {dr.ticker: dr for dr in debate_results}
@@ -329,13 +334,26 @@ def run_intraday_monitor():
     """Intraday check: position P&L, stop-loss triggers, drawdown, decay detection."""
     try:
         from execution.alpaca_client import AlpacaClient
+        from execution.engine import ExecutionEngine
         from risk.manager import RiskManager
+        from db.client import rest_upsert, table_exists
 
         client = AlpacaClient()
         risk = RiskManager(client)
+        engine = ExecutionEngine()
 
         if not client.is_market_open():
             return
+
+        # Reconcile: detect positions closed by Alpaca bracket orders
+        try:
+            if table_exists("trades"):
+                closed = engine.reconcile_positions()
+                if closed:
+                    rest_upsert("trades", closed)
+                    logger.info(f"Reconciled {len(closed)} closed positions from Alpaca")
+        except Exception:
+            logger.exception("Position reconciliation failed")
 
         state = risk.check_intraday()
 
@@ -343,8 +361,6 @@ def run_intraday_monitor():
             logger.critical(f"INTRADAY RED ALERT: {state.alerts}")
             # Emergency: close all positions
             positions = client.get_positions()
-            from execution.engine import ExecutionEngine
-            engine = ExecutionEngine()
             for p in positions:
                 try:
                     result = engine.execute_sell(p.symbol, reason=f"RISK_RED: {state.alerts}")
@@ -392,12 +408,24 @@ def run_market_close_journal():
     try:
         from ingestion.macro_data import fetch_macro_snapshot
         from execution.alpaca_client import AlpacaClient
+        from execution.engine import ExecutionEngine
         from paper.pnl import PnLTracker
         from db.client import rest_upsert, table_exists
 
         client = AlpacaClient()
         pnl = PnLTracker(client)
         macro = fetch_macro_snapshot()
+
+        # Reconcile: detect positions closed by Alpaca during the day
+        try:
+            if table_exists("trades"):
+                engine = ExecutionEngine()
+                closed = engine.reconcile_positions()
+                if closed:
+                    rest_upsert("trades", closed)
+                    logger.info(f"EOD reconcile: {len(closed)} positions closed by Alpaca")
+        except Exception:
+            logger.exception("EOD reconciliation failed")
 
         # Take current snapshot
         snap = pnl.snapshot()
@@ -695,17 +723,17 @@ def run_polymarket_scan():
         logger.exception("Polymarket scan failed")
 
 
-# --- Routine 13: X Sentiment Scanner (Phase 6 extension) ---
+# --- Routine 13: Multi-Source Sentiment Scanner (free: Reddit + Finnhub + RSS) ---
 
 def run_sentiment_scan():
-    """Scan X (Twitter) for financial sentiment using Grox-pattern classifier + Claude Haiku."""
+    """Scan Reddit, Finnhub, RSS for financial sentiment using Grox-pattern classifier + Claude Haiku."""
     if not SENTIMENT_ENABLED:
         return
-    logger.debug("=== X Sentiment Scan ===")
+    logger.debug("=== Multi-Source Sentiment Scan ===")
     try:
-        from sentiment.x_scanner import run_scan
+        from sentiment.multi_scanner import run_scan
 
-        scan = run_scan(max_tweets=50)
+        scan = run_scan()
         if scan.errors:
             for e in scan.errors:
                 logger.warning(f"Sentiment scan error: {e}")
@@ -728,7 +756,7 @@ def run_sentiment_scan():
 
         for ts in scan.ticker_signals[:10]:
             ticker = ts["ticker"]
-            overlap = " ★OVERLAP" if ticker in signal_tickers else ""
+            overlap = " *OVERLAP" if ticker in signal_tickers else ""
             logger.info(
                 f"  {ticker}: {ts['sentiment']} (net={ts['net_score']:.3f}, "
                 f"{ts['bullish_count']}B/{ts['bearish_count']}S, "
@@ -770,6 +798,19 @@ def setup_signal_handlers(loop: asyncio.AbstractEventLoop, scheduler: BrainSched
             pass
 
 
+def _check_port_available(port: int):
+    """Raise RuntimeError if port is already in use."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            logger.error(f"Port {port} already in use — is another daemon running?")
+            raise RuntimeError(
+                f"Port {port} is already occupied. Stop the existing daemon first."
+            )
+
+
 def main():
     logger.info("=" * 60)
     logger.info("AI Trading Brain — Starting Daemon (Phase 5)")
@@ -780,9 +821,18 @@ def main():
     logger.info(f"  NY Time: {get_ny_time().strftime('%Y-%m-%d %H:%M %Z')}")
     logger.info("=" * 60)
 
-    # Run initial scoring
-    logger.info("Running initial daily scoring...")
-    run_daily_scoring()
+    # Guard: check if dashboard port is already in use
+    _check_port_available(DASHBOARD_PORT)
+
+    # Guard: only run initial scoring during pre-market window (5:00-9:37 AM ET)
+    ny_now = get_ny_time()
+    premarket_start = ny_now.replace(hour=5, minute=0, second=0, microsecond=0)
+    premarket_end = ny_now.replace(hour=9, minute=37, second=0, microsecond=0)
+    if premarket_start <= ny_now < premarket_end:
+        logger.info("Running initial daily scoring...")
+        run_daily_scoring()
+    else:
+        logger.info(f"Skipping initial scoring (outside pre-market window: {ny_now.strftime('%H:%M %Z')})")
 
     # Run initial sentiment scan (so you don't wait 30 min for first data)
     if SENTIMENT_ENABLED:
