@@ -144,7 +144,7 @@ class HistoricalReplay:
         self.stats.end_date = str(all_dates[-1])
 
         days_to_run = min(max_days, len(pending))
-        logger.info(f"  Date range: {self.stats.start_date} → {self.stats.end_date}")
+        logger.info(f"  Date range: {self.stats.start_date} -> {self.stats.end_date}")
         logger.info(f"  Pending: {len(pending)} days, running {days_to_run}")
         logger.info(f"  Starting equity: ${self.stats.current_equity:,.0f}")
 

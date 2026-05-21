@@ -824,22 +824,7 @@ def main():
     # Guard: check if dashboard port is already in use
     _check_port_available(DASHBOARD_PORT)
 
-    # Guard: only run initial scoring during pre-market window (5:00-9:37 AM ET)
-    ny_now = get_ny_time()
-    premarket_start = ny_now.replace(hour=5, minute=0, second=0, microsecond=0)
-    premarket_end = ny_now.replace(hour=9, minute=37, second=0, microsecond=0)
-    if premarket_start <= ny_now < premarket_end:
-        logger.info("Running initial daily scoring...")
-        run_daily_scoring()
-    else:
-        logger.info(f"Skipping initial scoring (outside pre-market window: {ny_now.strftime('%H:%M %Z')})")
-
-    # Run initial sentiment scan (so you don't wait 30 min for first data)
-    if SENTIMENT_ENABLED:
-        logger.info("Running initial sentiment scan...")
-        run_sentiment_scan()
-
-    # Setup scheduler
+    # Setup scheduler FIRST (before any blocking calls)
     sched = BrainScheduler()
 
     # Phase 1 routines
@@ -887,19 +872,64 @@ def main():
     if SENTIMENT_ENABLED:
         logger.info(f"  X Sentiment: every {SENTIMENT_SCAN_INTERVAL_MINUTES}min — financial tweet scanner")
 
-    # Start FastAPI dashboard in same event loop
+    # Start FastAPI dashboard in background thread (health check available immediately)
+    import threading
     import uvicorn
     from dashboard.server import app
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=DASHBOARD_PORT, log_level="info")
-    server = uvicorn.Server(config)
-
-    try:
+    def _start_dashboard():
+        config = uvicorn.Config(app, host="0.0.0.0", port=DASHBOARD_PORT, log_level="info")
+        server = uvicorn.Server(config)
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        setup_signal_handlers(loop, sched)
-        logger.info(f"Brain daemon + dashboard running. http://localhost:{DASHBOARD_PORT} | Ctrl+C to stop.")
         loop.run_until_complete(server.serve())
+
+    dashboard_thread = threading.Thread(target=_start_dashboard, daemon=True, name="dashboard")
+    dashboard_thread.start()
+    logger.info(f"Dashboard starting on port {DASHBOARD_PORT} (background thread)")
+
+    # Run initial scans in scheduler threads (non-blocking, after health check is live)
+    ny_now = get_ny_time()
+    premarket_start = ny_now.replace(hour=5, minute=0, second=0, microsecond=0)
+    premarket_end = ny_now.replace(hour=9, minute=37, second=0, microsecond=0)
+    if premarket_start <= ny_now < premarket_end:
+        logger.info("Scheduling immediate daily scoring...")
+        sched._scheduler.add_job(
+            run_daily_scoring,
+            trigger="date",
+            run_date=datetime.now(timezone.utc),
+            id="initial_scoring",
+            misfire_grace_time=300,
+        )
+
+    if SENTIMENT_ENABLED:
+        logger.info("Scheduling immediate sentiment scan...")
+        sched._scheduler.add_job(
+            run_sentiment_scan,
+            trigger="date",
+            run_date=datetime.now(timezone.utc),
+            id="initial_sentiment",
+            misfire_grace_time=300,
+        )
+
+    try:
+        # Register signal handlers in main thread (no event loop needed)
+        def _shutdown(signum, frame):
+            logger.info(f"Received signal {signum}, shutting down...")
+            sched.stop()
+            import os as _os
+            _os._exit(0)
+
+        signal.signal(signal.SIGINT, _shutdown)
+        try:
+            signal.signal(signal.SIGTERM, _shutdown)
+        except (AttributeError, ValueError):
+            pass  # SIGTERM not available on Windows
+
+        logger.info(f"Brain daemon running. http://localhost:{DASHBOARD_PORT} | Ctrl+C to stop.")
+        # Keep main thread alive while dashboard runs in background
+        while dashboard_thread.is_alive():
+            dashboard_thread.join(timeout=1)
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received")
     finally:

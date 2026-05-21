@@ -51,7 +51,7 @@ class BrainScheduler:
             "default": SQLAlchemyJobStore(url=f"sqlite:///{jobstore_path}")
         }
         self._executors = {
-            "default": ThreadPoolExecutor(max_workers=3)
+            "default": ThreadPoolExecutor(max_workers=10)
         }
         self._scheduler = BackgroundScheduler(
             jobstores=self._jobstores,
