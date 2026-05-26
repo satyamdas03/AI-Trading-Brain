@@ -133,7 +133,7 @@ class FeedbackLoop:
 
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             rows = []
-            for factor in ["quality", "momentum", "value", "low_vol"]:
+            for factor in ["quality", "momentum", "value", "low_vol", "vol_rank"]:
                 rows.append({
                     "factor_name": factor,
                     "date": today,

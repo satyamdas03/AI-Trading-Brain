@@ -16,6 +16,7 @@ import pandas as pd
 from config import (
     DRY_RUN, MAX_POSITION_PCT, DAILY_TRADE_CAP, SIGNAL_TOP_N,
     TAKE_PROFIT_PCT, STOP_LOSS_PCT, MAX_POSITIONS_PER_SECTOR,
+    ATR_ENABLED, ATR_TP_MULTIPLIER, ATR_SL_MULTIPLIER,
 )
 from execution.alpaca_client import AlpacaClient, AlpacaPosition
 from execution.order_manager import OrderManager
@@ -38,6 +39,7 @@ class ExecutionEngine:
         max_new_positions: int = DAILY_TRADE_CAP,
         fundamentals: dict[str, dict] | None = None,
         max_per_sector: int = MAX_POSITIONS_PER_SECTOR,
+        atr_values: dict[str, float | None] | None = None,
     ) -> list[dict]:
         """Execute buys for top-N signals at market open.
 
@@ -47,6 +49,7 @@ class ExecutionEngine:
             max_new_positions: cap on new positions per session
             fundamentals: ticker -> {sector, ...} for sector diversification
             max_per_sector: max positions per GICS sector (default 1)
+            atr_values: ticker -> latest ATR value for volatility-adjusted exits
 
         Returns:
             List of trade result dicts for logging
@@ -99,6 +102,17 @@ class ExecutionEngine:
 
             qty = max(1, int(position_value / price))
 
+            # Determine TP/SL — use ATR-based if available, else fixed %
+            ticker_atr = (atr_values or {}).get(ticker)
+            if ATR_ENABLED and ticker_atr and ticker_atr > 0:
+                take_profit_price = round(price + ATR_TP_MULTIPLIER * ticker_atr, 2)
+                stop_loss_price = round(price - ATR_SL_MULTIPLIER * ticker_atr, 2)
+                exit_mode = f"ATR(${ticker_atr:.2f})"
+            else:
+                take_profit_price = round(price * (1 + TAKE_PROFIT_PCT), 2)
+                stop_loss_price = round(price * (1 - STOP_LOSS_PCT), 2)
+                exit_mode = "fixed%"
+
             trade_result = {
                 "trade_id": str(uuid.uuid4())[:8],
                 "ticker": ticker,
@@ -113,23 +127,30 @@ class ExecutionEngine:
                 "momentum_pct": float(row.get("momentum_score", 0.5)),
                 "value_pct": float(row.get("value_score", 0.5)),
                 "low_vol_pct": float(row.get("low_vol_score", 0.5)),
+                "vol_rank_pct": float(row.get("vol_rank_score", 0.5)),
                 "regime_id": int(row.get("regime_id", 2)),
                 "position_size_pct": position_pct,
-                "stop_loss_price": price * (1 - STOP_LOSS_PCT),
+                "stop_loss_price": stop_loss_price,
+                "take_profit_price": take_profit_price,
+                "exit_mode": exit_mode,
+                "atr_value": ticker_atr if ATR_ENABLED else None,
                 "max_favorable_excursion": 0.0,
                 "max_adverse_excursion": 0.0,
             }
 
             if self._dry_run:
-                logger.info(f"DRY RUN BUY: {qty} {ticker} @ ${price:.2f} ({position_pct:.0%} of equity)")
+                logger.info(
+                    f"DRY RUN BUY: {qty} {ticker} @ ${price:.2f} "
+                    f"({position_pct:.0%} of equity) | TP=${take_profit_price:.2f} SL=${stop_loss_price:.2f} [{exit_mode}]"
+                )
             else:
                 try:
                     order = self._client.place_order(
                         symbol=ticker, qty=qty, side="buy",
                         order_type="market", time_in_force="day",
                         order_class="bracket",
-                        take_profit=round(price * (1 + TAKE_PROFIT_PCT), 2),
-                        stop_loss=round(price * (1 - STOP_LOSS_PCT), 2)
+                        take_profit=take_profit_price,
+                        stop_loss=stop_loss_price,
                     )
                     trade_result["alpaca_order_id"] = order.id
                     logger.info(f"EXECUTED: BUY {qty} {ticker} @ ${price:.2f}")
@@ -249,9 +270,9 @@ class ExecutionEngine:
             pnl_usd = (exit_price - entry_price) * qty if entry_price and exit_price else 0
             pnl_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0
 
-            # Determine exit reason: TP or SL based on price direction
-            tp_price = entry_price * (1 + TAKE_PROFIT_PCT)
-            sl_price = entry_price * (1 - STOP_LOSS_PCT)
+            # Determine exit reason: use stored TP/SL if available, else compute from config
+            tp_price = trade.get("take_profit_price") or entry_price * (1 + TAKE_PROFIT_PCT)
+            sl_price = trade.get("stop_loss_price") or entry_price * (1 - STOP_LOSS_PCT)
             if exit_price and exit_price >= tp_price * 0.995:
                 reason = "take_profit"
             elif exit_price and exit_price <= sl_price * 1.005:

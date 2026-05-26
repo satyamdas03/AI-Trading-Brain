@@ -115,10 +115,14 @@ class PnLTracker:
                     "momentum_pct": t.get("momentum_pct"),
                     "value_pct": t.get("value_pct"),
                     "low_vol_pct": t.get("low_vol_pct"),
+                    "vol_rank_pct": t.get("vol_rank_pct"),
                     "regime_id": t.get("regime_id"),
                     "max_favorable_excursion": t.get("max_favorable_excursion"),
                     "max_adverse_excursion": t.get("max_adverse_excursion"),
                     "stop_loss_price": t.get("stop_loss_price"),
+                    "take_profit_price": t.get("take_profit_price"),
+                    "exit_mode": t.get("exit_mode"),
+                    "atr_value": t.get("atr_value"),
                     "position_size_pct": t.get("position_size_pct"),
                 })
 

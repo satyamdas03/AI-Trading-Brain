@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FactorWeights:
-    quality: float = 0.25
-    momentum: float = 0.25
-    value: float = 0.25
-    low_vol: float = 0.25
+    quality: float = 0.20
+    momentum: float = 0.20
+    value: float = 0.20
+    low_vol: float = 0.20
+    vol_rank: float = 0.20
 
     def as_dict(self) -> dict[str, float]:
         return {
@@ -35,28 +36,31 @@ class FactorWeights:
             "momentum": self.momentum,
             "value": self.value,
             "low_vol": self.low_vol,
+            "vol_rank": self.vol_rank,
         }
 
     def as_array(self) -> np.ndarray:
-        return np.array([self.quality, self.momentum, self.value, self.low_vol])
+        return np.array([self.quality, self.momentum, self.value, self.low_vol, self.vol_rank])
 
     @classmethod
     def from_dict(cls, d: dict[str, float]) -> "FactorWeights":
         return cls(
-            quality=d.get("quality", 0.25),
-            momentum=d.get("momentum", 0.25),
-            value=d.get("value", 0.25),
-            low_vol=d.get("low_vol", 0.25),
+            quality=d.get("quality", 0.20),
+            momentum=d.get("momentum", 0.20),
+            value=d.get("value", 0.20),
+            low_vol=d.get("low_vol", 0.20),
+            vol_rank=d.get("vol_rank", 0.20),
         )
 
     def normalize(self):
         """Ensure weights sum to 1.0."""
-        total = self.quality + self.momentum + self.value + self.low_vol
+        total = self.quality + self.momentum + self.value + self.low_vol + self.vol_rank
         if total > 0:
             self.quality /= total
             self.momentum /= total
             self.value /= total
             self.low_vol /= total
+            self.vol_rank /= total
 
     def clamp(self, min_w: float = 0.05, max_w: float = 0.50):
         """Clamp each weight to [min_w, max_w] range."""
@@ -64,6 +68,7 @@ class FactorWeights:
         self.momentum = max(min_w, min(max_w, self.momentum))
         self.value = max(min_w, min(max_w, self.value))
         self.low_vol = max(min_w, min(max_w, self.low_vol))
+        self.vol_rank = max(min_w, min(max_w, self.vol_rank))
         self.normalize()
 
 
@@ -82,7 +87,7 @@ class OnlineWeightOptimizer:
         self.weights = weights or FactorWeights()
         self.lr = lr
         self.momentum_decay = momentum_decay
-        self._velocity = np.zeros(4)
+        self._velocity = np.zeros(5)
         self._update_count = 0
 
     def update(self, factor_performance: dict[str, float]):
@@ -93,7 +98,7 @@ class OnlineWeightOptimizer:
                 Range should be approximately -1 to 1 (for IC) or 0 to 1 (for hit rate).
                 Values are centered: perf_centered = value - baseline
         """
-        factors = ["quality", "momentum", "value", "low_vol"]
+        factors = ["quality", "momentum", "value", "low_vol", "vol_rank"]
         current = self.weights.as_array()
 
         # Compute gradient: tanh of performance deviation from baseline
@@ -116,6 +121,7 @@ class OnlineWeightOptimizer:
             momentum=float(new_weights[1]),
             value=float(new_weights[2]),
             low_vol=float(new_weights[3]),
+            vol_rank=float(new_weights[4]),
         )
         self.weights.clamp()
         self._update_count += 1
@@ -123,7 +129,8 @@ class OnlineWeightOptimizer:
         logger.info(
             f"Weight update #{self._update_count}: "
             f"Q={self.weights.quality:.3f} M={self.weights.momentum:.3f} "
-            f"V={self.weights.value:.3f} LV={self.weights.low_vol:.3f}"
+            f"V={self.weights.value:.3f} LV={self.weights.low_vol:.3f} "
+            f"VR={self.weights.vol_rank:.3f}"
         )
 
     @property
@@ -168,6 +175,7 @@ class BayesianWeightOptimizer:
                 momentum=trial.suggest_float("momentum", 0.05, 0.50),
                 value=trial.suggest_float("value", 0.05, 0.50),
                 low_vol=trial.suggest_float("low_vol", 0.05, 0.50),
+                vol_rank=trial.suggest_float("vol_rank", 0.05, 0.50),
             )
             w.normalize()
 
@@ -187,6 +195,7 @@ class BayesianWeightOptimizer:
             momentum=study.best_params["momentum"],
             value=study.best_params["value"],
             low_vol=study.best_params["low_vol"],
+            vol_rank=study.best_params["vol_rank"],
         )
         best.normalize()
 
@@ -221,7 +230,7 @@ class BayesianWeightOptimizer:
 
         w = weights.as_array()
         returns = []
-        factor_cols = ["quality_pct", "momentum_pct", "value_pct", "low_vol_pct"]
+        factor_cols = ["quality_pct", "momentum_pct", "value_pct", "low_vol_pct", "vol_rank_pct"]
 
         for t in trades:
             scores = np.array([t.get(c, 0.5) or 0.5 for c in factor_cols])

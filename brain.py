@@ -28,6 +28,7 @@ from config import (
     CRYPTO_TOP_N, POLYMARKET_ENABLED, POLYMARKET_MAX_PER_MARKET,
     SENTIMENT_ENABLED, SENTIMENT_SCAN_INTERVAL_MINUTES,
     POLYMARKET_SCAN_INTERVAL_MINUTES,
+    OPTION_SENTIMENT_ENABLED, OPTION_SENTIMENT_MAX_TICKERS,
 )
 from scheduler import BrainScheduler, get_ny_time
 
@@ -74,8 +75,9 @@ def run_daily_scoring():
     try:
         from ingestion.universe import us_tickers
         from ingestion.macro_data import fetch_macro_snapshot
-        from ingestion.market_data import build_snapshot
+        from ingestion.market_data import build_snapshot, compute_all_atrs
         from signals.aggregator import compute_signals
+        from config import ATR_PERIOD
         from db.client import rest_upsert, table_exists
 
         macro = fetch_macro_snapshot()
@@ -86,6 +88,11 @@ def run_daily_scoring():
 
         snapshot = build_snapshot(us_ticker_list[:200], "US")
         us_scores = compute_signals(snapshot.prices, snapshot.fundamentals, macro, "US")
+
+        # Compute ATR for volatility-adjusted exits
+        atr_values = compute_all_atrs(snapshot.prices, ATR_PERIOD)
+        atr_count = sum(1 for v in atr_values.values() if v is not None and v > 0)
+        logger.info(f"ATR computed: {atr_count}/{len(atr_values)} tickers have valid ATR")
 
         top_us = us_scores.head(SIGNAL_TOP_N)
         logger.info(
@@ -106,22 +113,29 @@ def run_daily_scoring():
                 "momentum_percentile": float(row.get("momentum_score", 0.5)),
                 "value_percentile": float(row.get("value_score", 0.5)),
                 "low_vol_percentile": float(row.get("low_vol_score", 0.5)),
+                "vol_rank_percentile": float(row.get("vol_rank_score", 0.5)),
                 "short_interest_percentile": 0.5,
                 "regime_id": int(row.get("regime_id", 2)),
                 "regime_confidence": float(row.get("regime_confidence", 0.5)),
             })
 
-        if table_exists("daily_signals"):
-            rest_upsert("daily_signals", rows)
-            logger.info(f"Saved {len(rows)} US signals to daily_signals")
-
-        # Save top signals to state file for market-open execution
+        # Save top signals to state file first (survives DB failures)
         top_list = top_us[["ticker", "composite_score", "quality_score", "momentum_score",
-                            "value_score", "low_vol_score", "regime_id"]].to_dict(orient="records")
+                            "value_score", "low_vol_score", "vol_rank_score", "regime_id"]].to_dict(orient="records")
         state = _load_state()
         state["latest_signals"] = top_list
         state["last_scoring_time"] = datetime.now(timezone.utc).isoformat()
+        state["last_atr_values"] = {k: v for k, v in atr_values.items() if v is not None}
         _save_state(state)
+        logger.info(f"State saved: {len(top_list)} signals, {len(state['last_atr_values'])} ATRs")
+
+        # Persist to Supabase (non-fatal if fails)
+        if table_exists("daily_signals"):
+            try:
+                rest_upsert("daily_signals", rows)
+                logger.info(f"Saved {len(rows)} US signals to daily_signals")
+            except Exception as e:
+                logger.warning(f"Supabase upsert failed (non-fatal): {e}")
 
         elapsed = time.perf_counter() - start
         logger.info(f"Daily scoring complete in {elapsed:.1f}s ({len(rows)} tickers)")
@@ -210,6 +224,7 @@ def run_market_open_execution():
                 "momentum_percentile": float(row.get("momentum_score", 0.5)),
                 "value_percentile": float(row.get("value_score", 0.5)),
                 "low_vol_percentile": float(row.get("low_vol_score", 0.5)),
+                "vol_rank_percentile": float(row.get("vol_rank_score", 0.5)),
                 "regime_id": int(row.get("regime_id", 2)),
                 "regime_label": {1: "Risk-On", 2: "Late-Cycle", 3: "Bear", 4: "Recovery"}.get(int(row.get("regime_id", 2)), "Late-Cycle"),
                 **macro,
@@ -234,6 +249,26 @@ def run_market_open_execution():
                     )
                     ctx["x_sentiment_label"] = ss["sentiment"]
                     ctx["x_sentiment_score"] = ss["net_score"]
+
+        # 4.6. Enrich with put/call ratio options sentiment (live-only)
+        if OPTION_SENTIMENT_ENABLED:
+            try:
+                from sentiment.option_scanner import OptionSentimentScanner
+                pcr_scanner = OptionSentimentScanner(max_tickers=OPTION_SENTIMENT_MAX_TICKERS)
+                pcr_data = pcr_scanner.fetch_put_call_ratios(list(top_tickers["ticker"].values))
+                pcr_context = pcr_scanner.format_sentiment_context(pcr_data)
+                logger.info(f"Option PCR: {pcr_context}")
+                for ticker, ctx in contexts.items():
+                    pcr = pcr_data.get(ticker, {})
+                    if pcr.get("pcr") is not None:
+                        ctx["pcr_ratio"] = pcr["pcr"]
+                        ctx["pcr_sentiment"] = pcr["sentiment"]
+                        ctx["pcr_context"] = (
+                            f"PCR={pcr['pcr']:.3f} ({pcr['sentiment']}), "
+                            f"put_vol={pcr['put_vol']:.0f}, call_vol={pcr['call_vol']:.0f}"
+                        )
+            except Exception as e:
+                logger.warning(f"Option sentiment enrichment failed: {e}")
 
         # 5. Run 7-agent debate on each ticker
         logger.info(f"Running PARA-DEBATE on {len(top_tickers)} tickers...")
@@ -278,10 +313,13 @@ def run_market_open_execution():
         buy_df = signals_df[signals_df["ticker"].isin(buy_signals)]
         logger.info(f"Executing buys for: {buy_signals}")
 
+        atr_values = stored.get("last_atr_values", {})
+
         acc = client.get_account()
         trades = engine.execute_market_open(
             buy_df, acc.equity,
             fundamentals=fundamentals_map,
+            atr_values=atr_values,
         )
 
         # 8. Attach debate data to trades

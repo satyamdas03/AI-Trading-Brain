@@ -27,7 +27,7 @@ class MarketSnapshot:
 
 
 def fetch_prices(tickers: list[str], period: str = "1y") -> pd.DataFrame:
-    """Batch download price history. Returns DataFrame with columns: ticker, date, close, volume."""
+    """Batch download price history. Returns DataFrame with columns: ticker, date, close, high, low, volume."""
     if not tickers:
         return pd.DataFrame()
 
@@ -43,6 +43,9 @@ def fetch_prices(tickers: list[str], period: str = "1y") -> pd.DataFrame:
             close_col = "Close" if "Close" in data.columns else None
             vol_col = "Volume" if "Volume" in data.columns else None
 
+            high_col = "High" if "High" in data.columns else None
+            low_col = "Low" if "Low" in data.columns else None
+
             # Single ticker: flat columns
             if len(chunk) == 1:
                 if close_col:
@@ -50,6 +53,8 @@ def fetch_prices(tickers: list[str], period: str = "1y") -> pd.DataFrame:
                         "ticker": chunk[0],
                         "date": data.index,
                         "close": data[close_col].values,
+                        "high": data[high_col].values if high_col else data[close_col].values,
+                        "low": data[low_col].values if low_col else data[close_col].values,
                         "volume": data[vol_col].values if vol_col else 0,
                     }))
                 continue
@@ -63,10 +68,14 @@ def fetch_prices(tickers: list[str], period: str = "1y") -> pd.DataFrame:
                     for t in chunk:
                         try:
                             t_data = data.xs(t, axis=1, level=0)
+                            h = t_data["High"].values if "High" in t_data.columns else t_data["Close"].values
+                            l = t_data["Low"].values if "Low" in t_data.columns else t_data["Close"].values
                             results.append(pd.DataFrame({
                                 "ticker": t,
                                 "date": t_data.index,
                                 "close": t_data["Close"].values,
+                                "high": h,
+                                "low": l,
                                 "volume": t_data["Volume"].values,
                             }))
                         except (KeyError, AttributeError):
@@ -75,10 +84,14 @@ def fetch_prices(tickers: list[str], period: str = "1y") -> pd.DataFrame:
                     # (OHLCV, ticker) structure
                     for t in chunk:
                         try:
+                            h = data["High"][t].values if "High" in data.columns else data["Close"][t].values
+                            l = data["Low"][t].values if "Low" in data.columns else data["Close"][t].values
                             results.append(pd.DataFrame({
                                 "ticker": t,
                                 "date": data.index,
                                 "close": data["Close"][t].values,
+                                "high": h,
+                                "low": l,
                                 "volume": data["Volume"][t].values,
                             }))
                         except (KeyError, AttributeError):
@@ -91,6 +104,66 @@ def fetch_prices(tickers: list[str], period: str = "1y") -> pd.DataFrame:
     if not results:
         return pd.DataFrame()
     return pd.concat(results, ignore_index=True)
+
+
+def compute_atr(prices_df: pd.DataFrame, period: int = 14) -> "pd.Series":
+    """Compute Average True Range for a single ticker's price DataFrame.
+
+    Args:
+        prices_df: DataFrame with columns 'high', 'low', 'close'. Sorted by date ascending.
+        period: ATR lookback period (default 14).
+
+    Returns:
+        Series of ATR values indexed by date, or empty Series if insufficient data.
+    """
+    if prices_df.empty or len(prices_df) < period + 1:
+        return pd.Series(dtype=float)
+
+    high = prices_df["high"]
+    low = prices_df["low"]
+    close = prices_df["close"].shift(1)
+
+    tr = pd.concat([
+        high - low,
+        (high - close).abs(),
+        (low - close).abs(),
+    ], axis=1).max(axis=1)
+
+    return tr.ewm(span=period, adjust=False).mean()
+
+
+def get_latest_atr(ticker: str, prices_df: pd.DataFrame, period: int = 14) -> float | None:
+    """Get the most recent ATR value for a ticker from price history.
+
+    Args:
+        ticker: Ticker symbol.
+        prices_df: Full price history DataFrame with ticker, high, low, close columns.
+        period: ATR lookback period.
+
+    Returns:
+        Latest ATR value or None if unavailable.
+    """
+    ticker_data = prices_df[prices_df["ticker"] == ticker].sort_values("date")
+    if ticker_data.empty or len(ticker_data) < period + 1:
+        return None
+    atr = compute_atr(ticker_data, period)
+    return atr.iloc[-1] if not atr.empty else None
+
+
+def compute_all_atrs(prices_df: pd.DataFrame, period: int = 14) -> dict[str, float | None]:
+    """Compute latest ATR for all tickers in a price DataFrame.
+
+    Args:
+        prices_df: Multi-ticker price DataFrame with ticker, high, low, close columns.
+        period: ATR lookback period.
+
+    Returns:
+        Dict mapping ticker -> latest ATR value (or None if unavailable).
+    """
+    result = {}
+    for ticker in prices_df["ticker"].unique():
+        result[ticker] = get_latest_atr(ticker, prices_df, period)
+    return result
 
 
 def fetch_fundamentals(ticker: str) -> dict:

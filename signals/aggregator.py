@@ -56,8 +56,11 @@ def compute_signals(
     # 4. Quality (ROE, profit margins from fundamentals)
     scores["quality_score"] = _compute_quality_scores(fundamentals, tickers).values
 
-    # 5. Composite (equal-weighted mean of available factors)
-    factor_cols = ["momentum_score", "low_vol_score", "value_score", "quality_score"]
+    # 5. Volatility Rank (current vol vs historical distribution — low rank = bullish)
+    scores["vol_rank_score"] = _compute_vol_rank_scores(prices_df, tickers).values
+
+    # 6. Composite (equal-weighted mean of available factors)
+    factor_cols = ["momentum_score", "low_vol_score", "value_score", "quality_score", "vol_rank_score"]
     scores["composite_score"] = scores[factor_cols].mean(axis=1)
 
     # 6. Regime detection (simplified — Phase 4 adds full HMM)
@@ -250,6 +253,63 @@ def _compute_quality_scores(fundamentals: dict[str, dict], tickers: list[str]) -
         return pd.Series([0.5] * len(tickers), index=tickers)
     clipped = raw.clip(lower=raw.quantile(0.01), upper=raw.quantile(0.99))
     return clipped.rank(pct=True)
+
+
+def _compute_vol_rank_scores(prices_df: pd.DataFrame, tickers: list[str]) -> pd.Series:
+    """Volatility rank: current 60-day vol as percentile of 1-year rolling vol distribution.
+
+    Low rank = current vol is calm relative to history (bullish).
+    High rank = current vol is elevated vs history (bearish/fear spike).
+    """
+    if prices_df.empty:
+        return pd.Series([0.5] * len(tickers), index=tickers)
+
+    scores = {}
+    for t in tickers:
+        t_data = prices_df[prices_df["ticker"] == t].sort_values("date")
+        closes = t_data["close"].values
+        if len(closes) < 252:
+            scores[t] = np.nan
+            continue
+
+        # Current 60-day vol (safe window slicing to avoid shape mismatch)
+        window = closes[-61:]
+        if len(window) < 2:
+            scores[t] = np.nan
+            continue
+        recent_rets = np.diff(window) / window[:-1]
+        recent_rets = recent_rets[np.isfinite(recent_rets)]
+        if len(recent_rets) < 10:
+            scores[t] = np.nan
+            continue
+        current_vol = float(np.std(recent_rets))
+
+        # Historical rolling 60-day vol distribution (past year)
+        rolling_vols = []
+        for j in range(60, len(closes)):
+            window_slice = closes[j - 60:j + 1]
+            rets = np.diff(window_slice) / window_slice[:-1]
+            rets = rets[np.isfinite(rets)]
+            if len(rets) >= 10:
+                rolling_vols.append(float(np.std(rets)))
+
+        if len(rolling_vols) < 20:
+            scores[t] = np.nan
+            continue
+
+        # Percentile of current vol within historical distribution
+        # Low percentile = calm = bullish → score = 1 - percentile
+        vol_percentile = sum(1 for v in rolling_vols if v <= current_vol) / len(rolling_vols)
+        scores[t] = 1.0 - vol_percentile  # high score when vol is low
+
+    raw = pd.Series(scores)
+    valid = raw.dropna()
+    if valid.empty or valid.nunique() <= 1:
+        return pd.Series([0.5] * len(tickers), index=tickers)
+
+    clipped = valid.clip(lower=valid.quantile(0.01), upper=valid.quantile(0.99))
+    ranked = clipped.rank(pct=True)
+    return ranked.reindex(tickers).fillna(0.5)
 
 
 def _detect_regime_simple(macro: dict) -> int:

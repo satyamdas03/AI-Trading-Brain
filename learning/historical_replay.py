@@ -23,7 +23,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from config import DB_DIR, SIGNAL_TOP_N, MAX_POSITION_PCT, DAILY_TRADE_CAP, TAKE_PROFIT_PCT, STOP_LOSS_PCT, US_UNIVERSE_SIZE, TREND_FILTER_ENABLED
+from config import DB_DIR, SIGNAL_TOP_N, MAX_POSITION_PCT, DAILY_TRADE_CAP, TAKE_PROFIT_PCT, STOP_LOSS_PCT, US_UNIVERSE_SIZE, TREND_FILTER_ENABLED, ATR_ENABLED, ATR_PERIOD, ATR_TP_MULTIPLIER, ATR_SL_MULTIPLIER
 from learning.weight_optimizer import FactorWeights
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ class HistoricalReplay:
         self._spx_trend_cache: dict[str, bool] = {}
         self._last_weights: dict[str, float] = {}
         self._weight_updates: int = 0
+        self._daily_equity: list[dict] = []  # {date, equity} for Sharpe computation
 
     @property
     def feedback(self):
@@ -158,13 +159,14 @@ class HistoricalReplay:
             processed_dates.add(str(date_str))
             self.stats.days_processed += 1
             self.stats.last_processed_date = str(date_str)
+            self._daily_equity.append({"date": str(date_str), "equity": self.stats.current_equity})
 
             # Periodic equity print
             if self._verbose and (i + 1) % EQUITY_PRINT_INTERVAL == 0:
                 trades_taken = self.stats.trades_taken
                 wr = self.stats.wins / max(1, trades_taken)
                 w = self.feedback._current_weights.as_dict()
-                print(f"  === [{date_str}] day {i+1}/{days_to_run} | equity=${self.stats.current_equity:,.0f} | trades={trades_taken} | WR={wr:.0%} | DD={self.stats.current_drawdown:.1%} | w:M={w['momentum']:.2f}/LV={w['low_vol']:.2f}/Q={w['quality']:.2f}/V={w['value']:.2f} ===")
+                print(f"  === [{date_str}] day {i+1}/{days_to_run} | equity=${self.stats.current_equity:,.0f} | trades={trades_taken} | WR={wr:.0%} | DD={self.stats.current_drawdown:.1%} | w:M={w['momentum']:.2f}/LV={w['low_vol']:.2f}/Q={w['quality']:.2f}/V={w['value']:.2f}/VR={w.get('vol_rank',0.2):.2f} ===")
 
             # Save checkpoint periodically
             if (i + 1) % 10 == 0:
@@ -221,10 +223,27 @@ class HistoricalReplay:
             if composite < ENTRY_THRESHOLD:
                 continue
 
-            entry_price = float(row["close"])
+            try:
+                entry_price = float(row["close"])
+            except (ValueError, TypeError):
+                continue
+            if pd.isna(entry_price) or entry_price <= 0:
+                continue
             position_pct = MAX_POSITION_PCT
             position_value = self.stats.current_equity * position_pct
-            qty = max(1, int(position_value / entry_price))
+            try:
+                qty = max(1, int(position_value / entry_price))
+            except (ValueError, OverflowError):
+                continue
+
+            # ATR-based TP/SL if available
+            ticker_atr = self._get_atr_for_ticker(ticker, date_str)
+            if ATR_ENABLED and ticker_atr and ticker_atr > 0:
+                tp_price = entry_price + ATR_TP_MULTIPLIER * ticker_atr
+                sl_price = entry_price - ATR_SL_MULTIPLIER * ticker_atr
+            else:
+                tp_price = entry_price * (1 + TAKE_PROFIT_PCT)
+                sl_price = entry_price * (1 - STOP_LOSS_PCT)
 
             trade = {
                 "trade_id": f"sim_{date_str}_{ticker}",
@@ -238,10 +257,12 @@ class HistoricalReplay:
                 "momentum_pct": float(row.get("momentum_score", 0.5)),
                 "value_pct": float(row.get("value_score", 0.5)),
                 "low_vol_pct": float(row.get("low_vol_score", 0.5)),
+                "vol_rank_pct": float(row.get("vol_rank_score", 0.5)),
                 "regime_id": 2,
                 "position_size_pct": position_pct,
-                "stop_loss_price": entry_price * (1 - STOP_LOSS_PCT),
-                "take_profit_price": entry_price * (1 + TAKE_PROFIT_PCT),
+                "stop_loss_price": sl_price,
+                "take_profit_price": tp_price,
+                "exit_mode": f"ATR(${ticker_atr:.2f})" if (ATR_ENABLED and ticker_atr) else "fixed%",
             }
             self._open_positions.append(trade)
             self.stats.trades_taken += 1
@@ -329,7 +350,7 @@ class HistoricalReplay:
                     self._weight_updates += 1
                     if self._verbose:
                         w = new_w
-                        print(f"  WT   {date_str} | M={w['momentum']:.3f} LV={w['low_vol']:.3f} Q={w['quality']:.3f} V={w['value']:.3f} | update #{self._weight_updates}")
+                        print(f"  WT   {date_str} | M={w['momentum']:.3f} LV={w['low_vol']:.3f} Q={w['quality']:.3f} V={w['value']:.3f} VR={w.get('vol_rank',0.2):.3f} | update #{self._weight_updates}")
             except Exception as e:
                 logger.error(f"Feedback loop failed in replay: {e}")
 
@@ -353,15 +374,16 @@ class HistoricalReplay:
         if not future.any():
             return
         scores_df = self._prices_df.loc[future, :].copy()
-        factor_cols = ["quality_score", "momentum_score", "value_score", "low_vol_score"]
+        factor_cols = ["quality_score", "momentum_score", "value_score", "low_vol_score", "vol_rank_score"]
         for col in factor_cols:
             if col not in scores_df.columns:
                 scores_df[col] = 0.5
         self._prices_df.loc[future, "composite_score"] = (
-            weights.get("quality", 0.25) * scores_df["quality_score"]
-            + weights.get("momentum", 0.25) * scores_df["momentum_score"]
-            + weights.get("value", 0.25) * scores_df["value_score"]
-            + weights.get("low_vol", 0.25) * scores_df["low_vol_score"]
+            weights.get("quality", 0.20) * scores_df["quality_score"]
+            + weights.get("momentum", 0.20) * scores_df["momentum_score"]
+            + weights.get("value", 0.20) * scores_df["value_score"]
+            + weights.get("low_vol", 0.20) * scores_df["low_vol_score"]
+            + weights.get("vol_rank", 0.20) * scores_df["vol_rank_score"]
         )
 
     def _compute_factor_scores(self, prices_df: pd.DataFrame) -> pd.DataFrame:
@@ -425,32 +447,36 @@ class HistoricalReplay:
         scores_df["quality_score"] = scores_df.groupby("date")["quality_raw"].rank(pct=True)
         scores_df["value_score"] = scores_df.groupby("date")["value_raw"].rank(pct=True)
 
+        # Volatility rank: current 60-day vol as percentile of 1yr rolling vol
+        scores_df["vol_rank_score"] = scores_df.groupby("date")["vol_raw"].rank(pct=True, ascending=False)
+
         # Composite score with current weights
         try:
             w = self.feedback._current_weights.as_dict()
         except Exception:
-            w = {"quality": 0.25, "momentum": 0.25, "value": 0.25, "low_vol": 0.25}
+            w = {"quality": 0.20, "momentum": 0.20, "value": 0.20, "low_vol": 0.20, "vol_rank": 0.20}
 
+        w_vol_rank = w.get("vol_rank", 0.20)
         scores_df["composite_score"] = (
             w["quality"] * scores_df["quality_score"]
             + w["momentum"] * scores_df["momentum_score"]
             + w["value"] * scores_df["value_score"]
             + w["low_vol"] * scores_df["low_vol_score"]
+            + w_vol_rank * scores_df["vol_rank_score"]
         )
 
         # Merge back with prices
+        factor_score_cols = ["momentum_score", "low_vol_score",
+                             "quality_score", "value_score", "vol_rank_score", "composite_score"]
         prices_df = prices_df.merge(
-            scores_df[["ticker", "date", "momentum_score", "low_vol_score",
-                        "quality_score", "value_score", "composite_score"]],
+            scores_df[["ticker", "date"] + factor_score_cols],
             on=["ticker", "date"], how="left"
         )
 
         # Fill missing factor scores with neutral values
-        for col in ["momentum_score", "low_vol_score", "quality_score", "value_score"]:
+        for col in factor_score_cols:
             if col in prices_df.columns:
                 prices_df[col] = prices_df[col].fillna(0.5)
-        if "composite_score" in prices_df.columns:
-            prices_df["composite_score"] = prices_df["composite_score"].fillna(0.5)
 
         logger.info(f"  Factor scores computed: {len(scores_df)} rows, {len(scores_df['ticker'].unique())} tickers")
         return prices_df
@@ -466,12 +492,12 @@ class HistoricalReplay:
             return pd.DataFrame()
 
         # Ensure all factor columns exist
-        for col in ["momentum_score", "quality_score", "value_score", "low_vol_score"]:
+        for col in ["momentum_score", "quality_score", "value_score", "low_vol_score", "vol_rank_score"]:
             if col not in day_data.columns:
                 day_data[col] = 0.5
 
         df = day_data[["ticker", "close", "composite_score",
-                        "momentum_score", "quality_score", "value_score", "low_vol_score"]].copy()
+                        "momentum_score", "quality_score", "value_score", "low_vol_score", "vol_rank_score"]].copy()
         if df.empty:
             return df
         return df.sort_values("composite_score", ascending=False)
@@ -504,6 +530,32 @@ class HistoricalReplay:
             logger.warning(f"SPX trend cache build failed: {e}")
         logger.info(f"  SPX trend cache: {len(cache)} dates with 200MA status")
         return cache
+
+    def _get_atr_for_ticker(self, ticker: str, date_str: str) -> float | None:
+        """Compute ATR for a ticker as of a given date using cached price data.
+
+        Uses the pre-loaded prices_df with 'high', 'low', 'close' columns.
+        Looks at price data up to (and including) date_str to avoid lookahead bias.
+        """
+        if self._prices_df is None:
+            return None
+        ticker_data = self._prices_df[
+            (self._prices_df["ticker"] == ticker)
+            & (self._prices_df["date"] <= pd.Timestamp(date_str))
+        ].sort_values("date")
+
+        if len(ticker_data) < ATR_PERIOD + 1:
+            return None
+
+        if "high" not in ticker_data.columns or "low" not in ticker_data.columns:
+            return None
+
+        try:
+            from ingestion.market_data import compute_atr
+            atr_series = compute_atr(ticker_data, ATR_PERIOD)
+            return atr_series.iloc[-1] if not atr_series.empty else None
+        except Exception:
+            return None
 
     def _load_or_fetch_prices(self) -> pd.DataFrame:
         """Load cached prices or fetch fresh."""
@@ -733,6 +785,7 @@ class HistoricalReplay:
                 "quality_score": float(top.get("quality_score", 0.5)),
                 "value_score": float(top.get("value_score", 0.5)),
                 "low_vol_score": float(top.get("low_vol_score", 0.5)),
+                "vol_rank_score": float(top.get("vol_rank_score", 0.5)),
                 "entry_price": float(top["close"]),
                 "date": str(date_str)[:10],
                 "regime_id": int(top.get("regime_id", 2)),
@@ -804,12 +857,15 @@ class HistoricalReplay:
 
     def get_stats(self) -> dict:
         """Current replay stats for dashboard/status."""
+        wr = self.stats.wins / max(1, self.stats.trades_taken)
+        sharpe = self.compute_sharpe()
         return {
             "days_processed": self.stats.days_processed,
             "trades_taken": self.stats.trades_taken,
             "wins": self.stats.wins,
             "losses": self.stats.losses,
-            "win_rate": self.stats.wins / max(1, self.stats.trades_taken),
+            "win_rate": wr,
+            "sharpe_ratio": round(sharpe, 3),
             "total_pnl_pct": self.stats.total_pnl_pct,
             "current_equity": self.stats.current_equity,
             "peak_equity": self.stats.peak_equity,
@@ -818,6 +874,16 @@ class HistoricalReplay:
             "date_range": f"{self.stats.start_date} → {self.stats.end_date}",
             "open_positions": len(self._open_positions),
         }
+
+    def compute_sharpe(self) -> float:
+        """Compute annualized Sharpe ratio from daily equity values."""
+        if len(self._daily_equity) < 30:
+            return 0.0
+        equities = [d["equity"] for d in self._daily_equity]
+        returns = np.diff(equities) / equities[:-1]
+        if len(returns) < 2 or np.std(returns) == 0:
+            return 0.0
+        return float(np.mean(returns) / np.std(returns) * np.sqrt(252))
 
 
 def _compute_quality_raw(fundamentals: dict) -> float:

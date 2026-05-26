@@ -88,11 +88,21 @@ RETRAIN_MAX_TRIALS = int(os.getenv("RETRAIN_MAX_TRIALS", "500"))
 TAKE_PROFIT_PCT = 0.07
 STOP_LOSS_PCT = 0.06
 
+# --- ATR-based Volatility-Adjusted Exits ---
+ATR_ENABLED = os.getenv("ATR_ENABLED", "true").lower() == "true"
+ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
+ATR_TP_MULTIPLIER = float(os.getenv("ATR_TP_MULTIPLIER", "2.0"))
+ATR_SL_MULTIPLIER = float(os.getenv("ATR_SL_MULTIPLIER", "2.0"))
+
 # --- Trend Filter (block entries when SPX below 200MA) ---
 TREND_FILTER_ENABLED = os.getenv("TREND_FILTER_ENABLED", "true").lower() == "true"
 
 # --- Multi-Source Sentiment Scanner (free: Reddit + Finnhub + RSS) ---
 SENTIMENT_ENABLED = os.getenv("SENTIMENT_ENABLED", "false").lower() == "true"
+
+# --- Put/Call Ratio Options Sentiment (live-only, no historical data) ---
+OPTION_SENTIMENT_ENABLED = os.getenv("OPTION_SENTIMENT_ENABLED", "false").lower() == "true"
+OPTION_SENTIMENT_MAX_TICKERS = int(os.getenv("OPTION_SENTIMENT_MAX_TICKERS", "20"))
 SENTIMENT_SCAN_INTERVAL_MINUTES = int(os.getenv("SENTIMENT_SCAN_INTERVAL_MINUTES", "30"))
 SENTIMENT_SOURCES = os.getenv("SENTIMENT_SOURCES", "reddit,finnhub,rss")
 SENTIMENT_MAX_ITEMS = int(os.getenv("SENTIMENT_MAX_ITEMS", "80"))

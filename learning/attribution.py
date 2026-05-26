@@ -46,6 +46,7 @@ def attribute_trade(
         "momentum": trade.get("momentum_pct", 0.5) or 0.5,
         "value": trade.get("value_pct", 0.5) or 0.5,
         "low_vol": trade.get("low_vol_pct", 0.5) or 0.5,
+        "vol_rank": trade.get("vol_rank_pct", 0.5) or 0.5,
     }
 
     # Factor contribution: how much each factor deviated from 0.5 × P&L direction
@@ -76,7 +77,7 @@ def attribute_trade(
 def compute_factor_ic(
     trades: list[dict],
     factor_history: pd.DataFrame,
-    factor_names: list[str] = ("quality", "momentum", "value", "low_vol"),
+    factor_names: list[str] = ("quality", "momentum", "value", "low_vol", "vol_rank"),
 ) -> dict[str, float]:
     """Compute Information Coefficient (Spearman rank correlation) between factor scores and realized returns.
 
@@ -128,7 +129,7 @@ def compute_hit_rate(trades: list[dict]) -> dict[str, float]:
 
     Returns dict of factor_name → hit_rate (0.0-1.0)
     """
-    factor_names = ["quality", "momentum", "value", "low_vol"]
+    factor_names = ["quality", "momentum", "value", "low_vol", "vol_rank"]
     results = {}
 
     for factor in factor_names:
